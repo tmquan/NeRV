@@ -127,7 +127,7 @@ class NeRV3Dataset(Dataset):
                 torchvision.transforms.ToTensor()
             ]
         )
-        assert len(self.image_filenames) == len(self.cameras.fx)
+        assert len(self.image_filenames) == len(self._num_cameras)
 
     def __len__(self):
         return len(self.dataparser_outputs["image_filenames"])
@@ -136,10 +136,29 @@ class NeRV3Dataset(Dataset):
         imagefile = str(self.image_filenames[idx])
         image = torchvision.io.read_image(imagefile)
         # cam = self.cameras.camera_to_worlds[idx]
-        R = self.cameras.camera_to_worlds[idx][:3, :3]
-        T = self.cameras.camera_to_worlds[idx][:, -1:]
+        RT = self.cameras.camera_to_worlds[idx]
+        R = R[:3, :3]
+        T = T[:3, 3]
+        fx = self.cameras.fx[idx]
+        fy = self.cameras.fy[idx]
+        px = self.cameras.cx[idx]
+        py = self.cameras.cy[idx]
+
+        # K = [
+        #         [fx,   0,   px,   0],
+        #         [0,   fy,   py,   0],
+        #         [0,    0,    0,   1],
+        #         [0,    0,    1,   0],
+        # ]
+        K = torch.zeros((self._N, 4, 4), dtype=torch.float32)
+        K[:, 0, 0] = fx
+        K[:, 1, 1] = fy
+        K[:, 2, 0] = px
+        K[:, 2, 1] = py
+        K[:, 3, 2] = 1.
+        K[:, 2, 3] = 1.
         # cam = PerspectiveCameras(R=R, T=T)
-        return {"image": image, "R": R, "T": T}
+        return {"image": image, "R": R, "T": T, "K": K}
 
 class NeRV3DataModule(LightningDataModule):
     def __init__(self, 
@@ -351,8 +370,8 @@ class NeRV3LightningModule(LightningModule):
         images = batch["image"]
         Rs = batch["R"]
         Ts = batch["T"]
-
-        cameras = PerspectiveCameras(R=Rs, T=Ts, device=images.device)
+        Ks = batch["K"]
+        cameras = PerspectiveCameras(R=Rs, T=Ts, K=Ks, device=images.device)
         screens, masks = self.volume_model.forward(cameras=cameras)
         if batch_idx == 0:
             viz2d = torch.cat([images, screens], dim=-1)
