@@ -22,6 +22,8 @@ import torchvision
 import torchvision.io
 import torchvision.transform
 
+from torchmetrics import PeakSignalNoiseRatio
+
 # Monai
 from monai.data import Dataset, DataLoader
 from monai.data import list_data_collate, decollate_batch
@@ -358,7 +360,7 @@ class NeRV3LightningModule(LightningModule):
         )
 
         self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.1)
-
+        self.psnr = PeakSignalNoiseRatio()
     def configure_optimizers(self):
         optimizer = torch.optim.RAdam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -381,6 +383,9 @@ class NeRV3LightningModule(LightningModule):
         loss = self.loss(images, screens)
         info = {f'loss': loss}
 
+        if stage != "train":
+            psnr = self.psnr(images, screens)
+            info = {f'loss': loss, f'PSNR': psnr}
         return info
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
