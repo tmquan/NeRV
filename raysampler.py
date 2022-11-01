@@ -97,7 +97,7 @@ class ProbabilisticRaysampler(torch.nn.Module):
         )
 
 
-class NeRFRaysampler(torch.nn.Module):
+class PreCacheRaysampler(torch.nn.Module):
     """
     Implements the raysampler of NeRF.
 

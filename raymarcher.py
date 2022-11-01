@@ -6,7 +6,7 @@ from pytorch3d.renderer.implicit.raymarching import (
     _shifted_cumprod,
 )
 
-class XRayEmissionAbsorptionRaymarcher(EmissionAbsorptionRaymarcher):
+class EmissionAbsorptionRaymarcherFrontToBack(EmissionAbsorptionRaymarcher):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
