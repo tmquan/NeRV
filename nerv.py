@@ -3,8 +3,10 @@ import glob
 import warnings
 warnings.filterwarnings("ignore")
 
+from typing import Optional
+
 from argparse import ArgumentParser
-from pytorch_lightning import Trainer
+from pytorch_lightning import Trainer, LightningModule
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
@@ -19,7 +21,150 @@ import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (8192, rlimit[1]))
 
+from pytorch3d.common.compat import meshgrid_ij
+from pytorch3d.structures import Volumes
+from pytorch3d.ops.utils import eyes
+from pytorch3d.transforms import Transform3d
+from pytorch3d.renderer.cameras import (
+    CamerasBase,
+    FoVOrthographicCameras,
+    FoVPerspectiveCameras,
+    OpenGLOrthographicCameras,
+    OpenGLPerspectiveCameras,
+    OrthographicCameras,
+    PerspectiveCameras,
+    SfMOrthographicCameras,
+    SfMPerspectiveCameras,
+    look_at_rotation,
+    look_at_view_transform, 
+    get_world_to_view_transform, 
+    camera_position_from_spherical_angles,
+)
+
+from pytorch3d.renderer import (
+    ray_bundle_to_ray_points, 
+    RayBundle, 
+    ImplicitRenderer,
+    VolumeRenderer, 
+    VolumeSampler, 
+    GridRaysampler, 
+    NDCMultinomialRaysampler, NDCGridRaysampler, MonteCarloRaysampler, 
+    EmissionAbsorptionRaymarcher, AbsorptionOnlyRaymarcher, 
+)
+
 from datamodule import NeRVDataModule
+from raymarcher import *
+from raysampler import *
+from renderer import *
+from model import UNet
+
+class NeRVLightningModule(LightningModule):
+    def __init__(self, hparams, **kwargs):
+        super().__init__()
+        self.logsdir = hparams.logsdir
+        self.lr = hparams.lr
+        self.shape = hparams.shape
+        self.weight_decay = hparams.weight_decay
+        self.batch_size = hparams.batch_size
+        self.devices = hparams.devices
+        self.save_hyperparameters()
+
+        raysampler = NDCMultinomialRaysampler( #NDCGridRaysampler(
+            image_width = self.shape,
+            image_height = self.shape,
+            n_pts_per_ray = 400, #self.shape,
+            min_depth = 0.1,
+            max_depth = 4.5,
+        )
+
+        raymarcher = EmissionAbsorptionRaymarcherFrontToBack() # X-Ray Raymarcher
+
+        renderer = VolumeRenderer(
+            raysampler = raysampler, 
+            raymarcher = raymarcher,
+        )
+
+        self.visualizer = FigureRenderer(
+            renderer = renderer
+        )
+        
+        self.unet_model = UNet(
+            dim=64,
+            dim_mults=(1, 2, 4, 8),
+            channels=1,
+        )
+
+        self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.1)
+
+    def forward(self, image3d):
+        pass
+    
+
+    def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str]='evaluation'):   
+        _device = batch["image3d"].device
+        orgvol_ct = batch["image3d"]
+        orgimg_xr = batch["image2d"]
+        # orgcam_ct = torch.rand(self.batch_size, 4, device=_device)
+        random_nb = torch.rand(self.batch_size, 1, device=_device)
+        
+        # Construct the fixed cameras
+        dist0 = 2.7
+        elev0 = 0.0
+        azim0 = random_nb * 0
+        R0, T0 = look_at_view_transform(dist=dist0, elev=elev0, azim=azim0)
+        cameras0 = FoVPerspectiveCameras(R=R0, T=T0).to(_device)
+        singular_images = self.visualizer.forward(image3d=image3d, cameras=cameras0)
+        
+        # Construct the random camera
+        dist_ = 2.7
+        elev_ = 0.0
+        azim_ = random_nb * 360
+        R_, T_ = look_at_view_transform(dist=dist_, elev=elev_, azim=azim_)
+        cameras_ = FoVPerspectiveCameras(R=R_, T=T_).to(_device)
+        explicit_images = self.visualizer.forward(image3d=image3d, cameras=cameras_)
+        
+        # Predict the explicit image from singular
+        implicit_images = self.unet_model.forward(singular_images, azim_)
+
+        if batch_idx == 0:
+            viz2d = torch.cat([singular_images, 
+                               explicit_images, 
+                               implicit_images
+                               ], dim=-1)
+            grid = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
+            tensorboard = self.logger.experiment
+            tensorboard.add_image(f'{stage}_samples', grid.clamp(0., 1.), self.current_epoch*self.batch_size + batch_idx)
+
+        loss = self.loss(explicit_images, implicit_images)
+        info = {f'loss': loss}
+    def training_step(self, batch, batch_idx):
+        return self._common_step(batch, batch_idx, optimizer_idx=0, stage='train')
+
+    def validation_step(self, batch, batch_idx):
+        return self._common_step(batch, batch_idx, optimizer_idx=0, stage='validation')
+
+    def test_step(self, batch, batch_idx):
+        return self._common_step(batch, batch_idx, optimizer_idx=0, stage='test')
+
+    def _common_epoch_end(self, outputs, stage: Optional[str]='common'):
+        loss = torch.stack([x[f'loss'] for x in outputs]).mean()
+        self.log(f'{stage}_loss_epoch', loss, on_step=False, prog_bar=True, logger=True, sync_dist=True)
+
+    def train_epoch_end(self, outputs):
+        return self._common_epoch_end(outputs, stage='train')
+
+    def validation_epoch_end(self, outputs):
+        return self._common_epoch_end(outputs, stage='validation')
+    
+    def test_epoch_end(self, outputs):
+        return self._common_epoch_end(outputs, stage='test')
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.RAdam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=10, eta_min=self.lr / 10
+        )
+        return [optimizer], [scheduler]
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -101,7 +246,7 @@ if __name__ == "__main__":
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/UWSpine/processed/train/images'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/UWSpine/processed/test/images/'),
     ]
-    
+
     train_label3d_folders = [
     ]
 
@@ -179,17 +324,17 @@ if __name__ == "__main__":
     # test_random_uniform_cameras(hparams, datamodule)
     #############################################
 
-    # model = NeRVLightningModule(
-    #     hparams = hparams
-    # )
-    # model = model.load_from_checkpoint(hparams.ckpt, strict=False) if hparams.ckpt is not None else model
+    model = NeRVLightningModule(
+        hparams = hparams
+    )
+    model = model.load_from_checkpoint(hparams.ckpt, strict=False) if hparams.ckpt is not None else model
 
 
-    # trainer.fit(
-    #     model, 
-    #     datamodule,
-    # )
+    trainer.fit(
+        model, 
+        datamodule,
+    )
 
-    # test
+    test
 
-    # serve
+    serve
