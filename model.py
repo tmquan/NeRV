@@ -298,6 +298,7 @@ class UNet(nn.Module):
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     def forward(self, x, time, x_self_cond = None):
+        x = x * 2.0 - 1.0
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
             x = torch.cat((x_self_cond, x), dim = 1)
@@ -336,4 +337,4 @@ class UNet(nn.Module):
         x = torch.cat((x, r), dim = 1)
 
         x = self.final_res_block(x, t)
-        return self.final_conv(x)
+        return self.final_conv(x) * 0.5 + 0.5

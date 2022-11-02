@@ -121,8 +121,9 @@ class NeRVDataModule(LightningDataModule):
                 AddChanneld(keys=["image3d", "image2d"],),
                 Spacingd(keys=["image3d"], pixdim=(1.0, 1.0, 1.0), mode=["bilinear"]),  
                 # Rotate90d(keys=["image2d"], k=3),
+                # RandFlipd(keys=["image2d"], prob=1.0, spatial_axis=1),
                 OneOf([
-                    Orientationd(keys=('image3d'), axcodes="PIR"),
+                    Orientationd(keys=('image3d'), axcodes="PSL"),
                     # Orientationd(keys=('image3d'), axcodes="ARI"),
                     # Orientationd(keys=('image3d'), axcodes="PRI"),
                     # Orientationd(keys=('image3d'), axcodes="ALI"),
@@ -150,7 +151,6 @@ class NeRVDataModule(LightningDataModule):
                 CropForegroundd(keys=["image2d"], source_key="image2d", select_fn=(lambda x: x>0), margin=0),
                 # RandZoomd(keys=["image3d"], prob=1.0, min_zoom=0.9, max_zoom=1.0, padding_mode='constant', mode=["trilinear"], align_corners=True), 
                 # RandZoomd(keys=["image2d"], prob=1.0, min_zoom=0.9, max_zoom=1.0, padding_mode='constant', mode=["area"]), 
-                RandFlipd(keys=["image2d"], prob=1.0, spatial_axis=1),
                 # RandFlipd(keys=["image3d"], prob=0.5, spatial_axis=0),
                 # RandFlipd(keys=["image3d"], prob=0.5, spatial_axis=1),
 
@@ -181,7 +181,7 @@ class NeRVDataModule(LightningDataModule):
         self.train_loader = DataLoader(
             self.train_datasets, 
             batch_size=self.batch_size, 
-            num_workers=8, 
+            num_workers=16, 
             collate_fn=list_data_collate,
             shuffle=True,
         )
@@ -194,9 +194,9 @@ class NeRVDataModule(LightningDataModule):
                 AddChanneld(keys=["image3d", "image2d"],),
                 Spacingd(keys=["image3d"], pixdim=(1.0, 1.0, 1.0), mode=["bilinear"]),  
                 # Rotate90d(keys=["image2d"], k=3),
-                RandFlipd(keys=["image2d"], prob=1.0, spatial_axis=1), #Right cardio
+                # RandFlipd(keys=["image2d"], prob=1.0, spatial_axis=1), #Right cardio
                 OneOf([
-                    Orientationd(keys=('image3d'), axcodes="PIR"),
+                    Orientationd(keys=('image3d'), axcodes="PSL"),
                     # Orientationd(keys=('image3d'), axcodes="ARI"),
                     # Orientationd(keys=('image3d'), axcodes="PRI"),
                     # Orientationd(keys=('image3d'), axcodes="ALI"),
@@ -241,7 +241,7 @@ class NeRVDataModule(LightningDataModule):
         self.val_loader = DataLoader(
             self.val_datasets, 
             batch_size=self.batch_size, 
-            num_workers=4, 
+            num_workers=8, 
             collate_fn=list_data_collate,
             shuffle=True,
         )

@@ -1,9 +1,11 @@
 import os
 import glob
+from re import T
 import warnings
 warnings.filterwarnings("ignore")
 
 from typing import Optional
+from tqdm import tqdm
 
 from argparse import ArgumentParser
 from pytorch_lightning import Trainer, LightningModule
@@ -16,6 +18,8 @@ import torch
 torch.cuda.empty_cache()
 torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 torch.multiprocessing.set_sharing_strategy('file_system')
+
+import torchvision
 
 import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -94,49 +98,62 @@ class NeRVLightningModule(LightningModule):
             channels=1,
         )
 
-        self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.1)
+        self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.01)
 
     def forward(self, image3d):
         pass
     
-
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str]='evaluation'):   
         _device = batch["image3d"].device
-        orgvol_ct = batch["image3d"]
-        orgimg_xr = batch["image2d"]
-        # orgcam_ct = torch.rand(self.batch_size, 4, device=_device)
-        random_nb = torch.rand(self.batch_size, 1, device=_device)
+        image3d = batch["image3d"]
+        image2d = batch["image2d"]
+        random_ = torch.rand(1)
+        randomb = random_.view(1, 1).repeat(self.batch_size, 1)
         
         # Construct the fixed cameras
-        dist0 = 2.7
-        elev0 = 0.0
-        azim0 = random_nb * 0
+        dist0 = 3.0 * torch.ones_like(randomb)
+        elev0 = torch.zeros_like(randomb)
+        azim0 = torch.zeros_like(randomb)
         R0, T0 = look_at_view_transform(dist=dist0, elev=elev0, azim=azim0)
         cameras0 = FoVPerspectiveCameras(R=R0, T=T0).to(_device)
         singular_images = self.visualizer.forward(image3d=image3d, cameras=cameras0)
         
         # Construct the random camera
-        dist_ = 2.7
-        elev_ = 0.0
-        azim_ = random_nb * 360
+        dist_ = 3.0 * torch.ones_like(randomb)
+        elev_ = torch.zeros_like(randomb)
+        azim_ = 360 * randomb
         R_, T_ = look_at_view_transform(dist=dist_, elev=elev_, azim=azim_)
         cameras_ = FoVPerspectiveCameras(R=R_, T=T_).to(_device)
         explicit_images = self.visualizer.forward(image3d=image3d, cameras=cameras_)
+    
+        
+        implicit_images = singular_images.clone().detach() 
+        expected_images = image2d.clone().detach()
+        concated_images = torch.cat([implicit_images, expected_images], dim=0)
+        numsteps = (360 * random_).long()
+        # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
+        for t in range(0, numsteps):
+            concated_images = self.unet_model.forward(concated_images, \
+                torch.tensor(t, dtype=torch.float32, device=_device).repeat(2*self.batch_size, 1).squeeze(1))
         
         # Predict the explicit image from singular
-        implicit_images = self.unet_model.forward(singular_images, azim_)
+        implicit_images, expected_images = concated_images[:self.batch_size], concated_images[self.batch_size:]
 
         if batch_idx == 0:
             viz2d = torch.cat([singular_images, 
                                explicit_images, 
-                               implicit_images
-                               ], dim=-1)
+                               implicit_images,
+                               image2d, 
+                               expected_images,
+                               ], dim=-2).transpose(2, 3)
             grid = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
             tensorboard = self.logger.experiment
             tensorboard.add_image(f'{stage}_samples', grid.clamp(0., 1.), self.current_epoch*self.batch_size + batch_idx)
 
         loss = self.loss(explicit_images, implicit_images)
         info = {f'loss': loss}
+        return info 
+        
     def training_step(self, batch, batch_idx):
         return self._common_step(batch, batch_idx, optimizer_idx=0, stage='train')
 
@@ -215,6 +232,7 @@ if __name__ == "__main__":
             checkpoint_callback, 
         ],
         # accumulate_grad_batches=4, 
+        # strategy="ddp_sharded", #"horovod", #"deepspeed", #"ddp_sharded",
         strategy="fsdp", #"fsdp", #"ddp_sharded", #"horovod", #"deepspeed", #"ddp_sharded",
         precision=16,  #if hparams.use_amp else 32,
         # stochastic_weight_avg=True,
@@ -335,6 +353,6 @@ if __name__ == "__main__":
         datamodule,
     )
 
-    test
+    # test
 
-    serve
+    # serve
