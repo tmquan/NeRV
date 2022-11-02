@@ -173,9 +173,15 @@ class NeRVLightningModule(LightningModule):
         cameras0 = FoVPerspectiveCameras(R=R0, T=T0).to(_device)
         figures = self.visualizer.forward(image3d=image3d, cameras=cameras0)
 
-        volumes = self.forward(figures)
+        # volumes = self.forward(figures)
+        # screens = self.visualizer.forward(image3d=volumes, cameras=cameras0)
+        # reconst = self.forward(image2d)
+        # picture = self.visualizer.forward(image3d=reconst, cameras=cameras0)
+
+        input2d = torch.cat([figures, image2d], dim=0)
+        recon3d = self.forward(input2d)
+        volumes, reconst = recon3d[:self.batch_size], recon3d[self.batch_size:]
         screens = self.visualizer.forward(image3d=volumes, cameras=cameras0)
-        reconst = self.forward(image2d)
         picture = self.visualizer.forward(image3d=reconst, cameras=cameras0)
 
         if batch_idx == 0:
