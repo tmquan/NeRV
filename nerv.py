@@ -94,7 +94,8 @@ class NeRVLightningModule(LightningModule):
             dim_mults=(1, 2, 4, 8),
             channels=1,
         )
-        self.numsteps = 60
+        self.numsteps = 12
+        self.stepsize = 30
         self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.01)
 
     def forward(self, image3d):
@@ -104,59 +105,58 @@ class NeRVLightningModule(LightningModule):
         _device = batch["image3d"].device
         image3d = batch["image3d"]
         image2d = batch["image2d"]
-        randomt = torch.randint(0, self.numsteps, (1,),
-                                device=_device).long().repeat(self.batch_size)
+        randomt = torch.randint(0, 360, (1,), device=_device).long()
+        random_ = randomt.repeat(self.batch_size)
 
         # Construct the fixed cameras
-        dist0 = 3.0 * torch.ones_like(randomt)
-        elev0 = torch.zeros_like(randomt)
-        azim0 = torch.zeros_like(randomt)
+        dist0 = 3.0 * torch.ones_like(random_)
+        elev0 = torch.zeros_like(random_)
+        azim0 = torch.zeros_like(random_)
         R0, T0 = look_at_view_transform(dist=dist0, elev=elev0, azim=azim0)
         cameras0 = FoVPerspectiveCameras(R=R0, T=T0).to(_device)
-        singular_images = self.visualizer.forward(
-            image3d=image3d, cameras=cameras0)
+        singular_images = self.visualizer.forward(image3d=image3d, cameras=cameras0)
 
         # Construct the random camera
-        dist_ = 3.0 * torch.ones_like(randomt)
-        elev_ = torch.zeros_like(randomt)
-        azim_ = randomt
+        dist_ = 3.0 * torch.ones_like(random_)
+        elev_ = torch.zeros_like(random_)
+        azim_ = random_
         R_, T_ = look_at_view_transform(dist=dist_, elev=elev_, azim=azim_)
         cameras_ = FoVPerspectiveCameras(R=R_, T=T_).to(_device)
-        explicit_images = self.visualizer.forward(
-            image3d=image3d, cameras=cameras_)
+        explicit_images = self.visualizer.forward(image3d=image3d, cameras=cameras_)
 
-        implicit_images = singular_images.clone().detach()
-        expected_images = image2d.clone().detach()
+        implicit_images = singular_images
+        expected_images = image2d
         concated_inputs = torch.cat([implicit_images, expected_images], dim=0)
-        concated_images = self.unet_model.forward(concated_inputs, randomt.repeat(2))
-        implicit_images, expected_images = concated_images[:self.batch_size], concated_images[self.batch_size:]
+        concated_images = self.unet_model.forward(concated_inputs, random_.repeat(2))
+        implicit_output, expected_output = concated_images[:self.batch_size], concated_images[self.batch_size:]
 
-        # # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
-        # for t in tqdm(torch.arange(0, int(randomt)), desc='Running forward pass', total=int(randomt)):
-        #     concated_images = self.unet_model.forward(
-        #         concated_images, t.repeat(2*self.batch_size).to(_device))
+        # # # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
+        # # for t in tqdm(torch.arange(0, int(randomt)), desc='Running forward pass', total=int(randomt)):
+        # #     concated_images = self.unet_model.forward(
+        # #         concated_images, t.repeat(2*self.batch_size).to(_device))
 
         # # Predict the explicit image from singular
-        # implicit_images, expected_images = concated_images[:self.batch_size], concated_images[self.batch_size:]
-        # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
-        # for t in tqdm(torch.arange(0, int(randomt)), desc='Running forward pass', total=int(randomt)):
-        #     implicit_images = self.unet_model.forward(implicit_images, t.repeat(self.batch_size).to(_device)*6)
-        #     expected_images = self.unet_model.forward(expected_images, t.repeat(self.batch_size).to(_device)*6)
+        # # implicit_images, expected_images = concated_images[:self.batch_size], concated_images[self.batch_size:]
+        # # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
+        # for t in tqdm(torch.arange(start=0, end=int(randomt), step=self.stepsize), desc='Running forward pass', total=int(randomt/self.stepsize)):
+        #     # implicit_images = self.unet_model.forward(implicit_images, t.repeat(self.batch_size).to(_device))
+        #     # expected_images = self.unet_model.forward(expected_images, t.repeat(self.batch_size).to(_device))
+        #     concated_images = self.unet_model.forward(concated_images, t.detach().repeat(2*self.batch_size).to(_device))
+        # implicit_output, expected_output = concated_images[:self.batch_size], concated_images[self.batch_size:]
 
         if batch_idx == 0:
             viz2d = torch.cat([singular_images,
                                explicit_images,
-                               implicit_images,
+                               implicit_output,
                                image2d,
-                               expected_images,
+                               expected_output,
                                ], dim=-2).transpose(2, 3)
             grid = torchvision.utils.make_grid(
                 viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
             tensorboard = self.logger.experiment
-            tensorboard.add_image(f'{stage}_samples', grid.clamp(
-                0., 1.), self.current_epoch*self.batch_size + batch_idx)
+            tensorboard.add_image(f'{stage}_samples', grid.clamp(0., 1.), self.current_epoch*self.batch_size + batch_idx)
 
-        loss = self.loss(explicit_images, implicit_images)
+        loss = self.loss(explicit_images, implicit_output)
         info = {f'loss': loss}
         return info
 
