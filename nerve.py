@@ -36,8 +36,8 @@ from pytorch3d.ops.utils import eyes
 from pytorch3d.structures import Volumes
 from pytorch3d.common.compat import meshgrid_ij
 
-from monai.networks.layers import * #Reshape
-from monai.networks.nets import * #Unet, DenseNet121, Generator
+from monai.networks.layers import *  # Reshape
+from monai.networks.nets import *  # Unet, DenseNet121, Generator
 
 from pytorch_lightning.utilities.seed import seed_everything
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
@@ -105,7 +105,7 @@ class NeRVLightningModule(LightningModule):
         self.clarity_net = nn.Sequential(
             Unet(
                 spatial_dims=2,
-                in_channels=1, 
+                in_channels=1,
                 out_channels=self.shape,
                 channels=(64, 128, 256, 512, 1024),
                 strides=(2, 2, 2, 2),
@@ -114,8 +114,8 @@ class NeRVLightningModule(LightningModule):
                 up_kernel_size=3,
                 act=("LeakyReLU", {"inplace": True}),
                 norm=Norm.BATCH,
-                dropout=0.5,
-            ), 
+                # dropout=0.5,
+            ),
             Reshape(*[1, self.shape, self.shape, self.shape]),
             nn.Tanh()
         )
@@ -124,24 +124,7 @@ class NeRVLightningModule(LightningModule):
             Unet(
                 spatial_dims=3,
                 in_channels=1,
-                out_channels=1, 
-                channels=(64, 128, 256, 512, 1024),
-                strides=(2, 2, 2, 2),
-                num_res_units=2,
-                kernel_size=3,
-                up_kernel_size=3,
-                act=("LeakyReLU", {"inplace": True}),
-                norm=Norm.BATCH,
-                dropout=0.5,
-            ), 
-            nn.Tanh()
-        )
-
-        self.mixture_net = nn.Sequential(
-            Unet(
-                spatial_dims=3,
-                in_channels=2,
-                out_channels=1, 
+                out_channels=1,
                 channels=(64, 128, 256, 512, 1024),
                 strides=(2, 2, 2, 2),
                 num_res_units=2,
@@ -150,15 +133,32 @@ class NeRVLightningModule(LightningModule):
                 act=("LeakyReLU", {"inplace": True}),
                 norm=Norm.BATCH,
                 # dropout=0.5,
-            ), 
+            ),
             nn.Tanh()
         )
 
+        self.mixture_net = nn.Sequential(
+            Unet(
+                spatial_dims=3,
+                in_channels=2,
+                out_channels=1,
+                channels=(64, 128, 256, 512, 1024),
+                strides=(2, 2, 2, 2),
+                num_res_units=2,
+                kernel_size=3,
+                up_kernel_size=3,
+                act=("LeakyReLU", {"inplace": True}),
+                norm=Norm.BATCH,
+                # dropout=0.5,
+            ),
+            nn.Tanh()
+        )
 
     def forward(self, figures):
         clarity = self.clarity_net(figures * 2.0 - 1.0)
         density = self.density_net(clarity)
-        volumes = self.mixture_net(torch.cat([clarity, density], dim=1)) * 0.5 + 0.5
+        volumes = self.mixture_net(
+            torch.cat([clarity, density], dim=1)) * 0.5 + 0.5
         return volumes
 
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str] = 'evaluation'):
@@ -173,35 +173,39 @@ class NeRVLightningModule(LightningModule):
         cameras0 = FoVPerspectiveCameras(R=R0, T=T0).to(_device)
         figures = self.visualizer.forward(image3d=image3d, cameras=cameras0)
 
-        # volumes = self.forward(figures)
-        # screens = self.visualizer.forward(image3d=volumes, cameras=cameras0)
-        # reconst = self.forward(image2d)
-        # picture = self.visualizer.forward(image3d=reconst, cameras=cameras0)
-
-        input2d = torch.cat([figures, image2d], dim=0)
-        recon3d = self.forward(input2d)
-        volumes, reconst = recon3d[:self.batch_size], recon3d[self.batch_size:]
+        volumes = self.forward(figures)
         screens = self.visualizer.forward(image3d=volumes, cameras=cameras0)
+        reconst = self.forward(image2d)
         picture = self.visualizer.forward(image3d=reconst, cameras=cameras0)
 
+        # input2d = torch.cat([figures, image2d], dim=0)
+        # recon3d = self.forward(input2d)
+        # volumes, reconst = recon3d[:self.batch_size], recon3d[self.batch_size:]
+        # screens = self.visualizer.forward(image3d=volumes, cameras=cameras0)
+        # picture = self.visualizer.forward(image3d=reconst, cameras=cameras0)
+
         if batch_idx == 0:
-            viz2d = torch.cat([image3d[..., self.shape//2, :], 
+            viz2d = torch.cat([image3d[..., self.shape//2, :],
                                figures,
-                               volumes[..., self.shape//2, :], 
+                               volumes[..., self.shape//2, :],
                                screens,
                                image2d,
-                               reconst[..., self.shape//2, :], 
-                               picture, 
+                               reconst[..., self.shape//2, :],
+                               picture,
                                ], dim=-2).transpose(2, 3)
-            grid = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
+            grid = torchvision.utils.make_grid(
+                viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
             tensorboard = self.logger.experiment
-            tensorboard.add_image(f'{stage}_samples', grid.clamp(0., 1.), self.current_epoch*self.batch_size + batch_idx)
+            tensorboard.add_image(f'{stage}_samples', grid.clamp(
+                0., 1.), self.current_epoch*self.batch_size + batch_idx)
 
-        im3d_loss = self.loss(image3d, volumes) 
-        im2d_loss = self.loss(image2d, picture)
-        self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-        self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-        
+        im3d_loss = self.loss(image3d, volumes)
+        im2d_loss = self.loss(image2d, picture) + self.loss(figures, screens)
+        self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage == 'train'),
+                 prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+        self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage == 'train'),
+                 prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+
         info = {f'loss': im3d_loss + im2d_loss}
         return info
 
