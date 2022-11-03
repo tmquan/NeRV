@@ -234,6 +234,16 @@ class NeRVLightningModule(LightningModule):
         R_random, T_random = look_at_view_transform(dist=dist_random, elev=elev_random, azim=azim_random)
         camera_random = FoVPerspectiveCameras(R=R_random, T=T_random, fov=45).to(_device)
 
+        # XR pathway
+        src_figure_xr_stable = image2d
+        est_volume_xr = self.forward(src_figure_xr_stable)
+        est_opaque_xr = self.opacity_net(est_volume_xr)
+        est_figure_xr_stable = self.visualizer.forward(
+            image3d=est_volume_xr, 
+            opacity=est_opaque_xr, 
+            cameras=camera_stable
+        )
+
         # CT pathway
         src_volume_ct = image3d
         src_opaque_ct = self.opacity_net(src_volume_ct)
@@ -258,16 +268,6 @@ class NeRVLightningModule(LightningModule):
             image3d=est_volume_ct, 
             opacity=est_opaque_ct, 
             cameras=camera_random
-        )
-
-        # XR pathway
-        src_figure_xr_stable = image2d
-        est_volume_xr = self.forward(src_figure_xr_stable)
-        est_opaque_xr = self.opacity_net(est_volume_xr)
-        est_figure_xr_stable = self.visualizer.forward(
-            image3d=est_volume_xr, 
-            opacity=est_opaque_xr, 
-            cameras=camera_stable
         )
 
         # Compute the loss
