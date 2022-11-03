@@ -7,9 +7,12 @@ class FigureRenderer(nn.Module):
         super().__init__()
         self._renderer = renderer
         
-    def forward(self, cameras, image3d, norm_type="standardized", eps=1e-8):
+    def forward(self, cameras, image3d, opacity=None, norm_type="standardized", eps=1e-8):
         features = image3d.repeat(1, 3, 1, 1, 1) if image3d.shape[1]==1 else image3d
-        densities = torch.ones_like(image3d.mean(dim=1))*0.1 if image3d.shape[1] != 1 else torch.ones_like(image3d)*0.1
+        if opacity is None:
+            densities = torch.ones_like(image3d.mean(dim=1))*0.1 if image3d.shape[1] != 1 else torch.ones_like(image3d)*0.1
+        else:
+            densities = opacity*0.1
 
         shape = max(image3d.shape[1], image3d.shape[2])
         volumes = Volumes(

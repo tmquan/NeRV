@@ -1,63 +1,102 @@
-from model import Unet
+import os
+import warnings
+warnings.filterwarnings("ignore")
+import resource
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (8192, rlimit[1]))
+
+import torch
+import torchvision
+torch.cuda.empty_cache()
+torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 from renderer import *
 from raysampler import *
 from raymarcher import *
 from datamodule import NeRVDataModule
+
 from pytorch3d.renderer import (
-    ray_bundle_to_ray_points,
-    RayBundle,
-    ImplicitRenderer,
     VolumeRenderer,
-    VolumeSampler,
-    GridRaysampler,
-    NDCMultinomialRaysampler, NDCGridRaysampler, MonteCarloRaysampler,
-    EmissionAbsorptionRaymarcher, AbsorptionOnlyRaymarcher,
+    NDCMultinomialRaysampler, 
 )
 from pytorch3d.renderer.cameras import (
     CamerasBase,
-    FoVOrthographicCameras,
-    FoVPerspectiveCameras,
-    OpenGLOrthographicCameras,
-    OpenGLPerspectiveCameras,
-    OrthographicCameras,
-    PerspectiveCameras,
-    SfMOrthographicCameras,
-    SfMPerspectiveCameras,
-    look_at_rotation,
-    look_at_view_transform,
-    get_world_to_view_transform,
-    camera_position_from_spherical_angles,
+    FoVPerspectiveCameras, 
+    look_at_view_transform
 )
-from pytorch3d.transforms import Transform3d
-from pytorch3d.ops.utils import eyes
-from pytorch3d.structures import Volumes
-from pytorch3d.common.compat import meshgrid_ij
-import resource
-import torchvision
-import torch
+
+from monai.networks.layers import *  # Reshape
+from monai.networks.nets import *  # Unet, DenseNet121, Generator
+
 from pytorch_lightning.utilities.seed import seed_everything
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning import Trainer, LightningModule
 from argparse import ArgumentParser
-from tqdm import tqdm
-from typing import Optional
-import os
-import glob
-from re import T
-import warnings
-warnings.filterwarnings("ignore")
 
+from typing import Optional, Sequence
 
-torch.cuda.empty_cache()
-torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-torch.multiprocessing.set_sharing_strategy('file_system')
+def join_cameras_as_batch(cameras_list: Sequence[CamerasBase]) -> CamerasBase:
+    """
+    Create a batched cameras object by concatenating a list of input
+    cameras objects. All the tensor attributes will be joined along
+    the batch dimension.
+    Args:
+        cameras_list: List of camera classes all of the same type and
+            on the same device. Each represents one or more cameras.
+    Returns:
+        cameras: single batched cameras object of the same
+            type as all the objects in the input list.
+    """
+    # Get the type and fields to join from the first camera in the batch
+    c0 = cameras_list[0]
+    fields = c0._FIELDS
+    shared_fields = c0._SHARED_FIELDS
 
+    if not all(isinstance(c, CamerasBase) for c in cameras_list):
+        raise ValueError("cameras in cameras_list must inherit from CamerasBase")
 
-rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-resource.setrlimit(resource.RLIMIT_NOFILE, (8192, rlimit[1]))
+    if not all(type(c) is type(c0) for c in cameras_list[1:]):
+        raise ValueError("All cameras must be of the same type")
 
+    if not all(c.device == c0.device for c in cameras_list[1:]):
+        raise ValueError("All cameras in the batch must be on the same device")
+
+    # Concat the fields to make a batched tensor
+    kwargs = {}
+    kwargs["device"] = c0.device
+
+    for field in fields:
+        field_not_none = [(getattr(c, field) is not None) for c in cameras_list]
+        if not any(field_not_none):
+            continue
+        if not all(field_not_none):
+            raise ValueError(f"Attribute {field} is inconsistently present")
+
+        attrs_list = [getattr(c, field) for c in cameras_list]
+
+        if field in shared_fields:
+            # Only needs to be set once
+            if not all(a == attrs_list[0] for a in attrs_list):
+                raise ValueError(f"Attribute {field} is not constant across inputs")
+
+            # e.g. "in_ndc" is set as attribute "_in_ndc" on the class
+            # but provided as "in_ndc" in the input args
+            if field.startswith("_"):
+                field = field[1:]
+
+            kwargs[field] = attrs_list[0]
+        elif isinstance(attrs_list[0], torch.Tensor):
+            # In the init, all inputs will be converted to
+            # batched tensors before set as attributes
+            # Join as a tensor along the batch dimension
+            kwargs[field] = torch.cat(attrs_list, dim=0)
+        else:
+            raise ValueError(f"Field {field} type is not supported for batching")
+
+    return c0.__class__(**kwargs)
 
 class NeRVLightningModule(LightningModule):
     def __init__(self, hparams, **kwargs):
@@ -89,75 +128,176 @@ class NeRVLightningModule(LightningModule):
             renderer=renderer
         )
 
-        self.unet_model = Unet(
-            dim=64,
-            dim_mults=(1, 2, 4, 8),
-            channels=1,
-        )
-        self.numsteps = 12
-        self.stepsize = 30
+        # self.unet_model = Unet(
+        #     dim=64,
+        #     dim_mults=(1, 2, 4, 8),
+        #     channels=1,
+        # )
+        # self.numsteps = 60
+
         self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.01)
 
-    def forward(self, image3d):
-        pass
+        self.clarity_net = nn.Sequential(
+            Unet(
+                spatial_dims=2,
+                in_channels=1,
+                out_channels=self.shape,
+                channels=(64, 128, 256, 512, 1024),
+                strides=(2, 2, 2, 2),
+                num_res_units=4,
+                kernel_size=3,
+                up_kernel_size=3,
+                act=("LeakyReLU", {"inplace": True}),
+                norm=Norm.BATCH,
+                # dropout=0.5,
+            ),
+            Reshape(*[1, self.shape, self.shape, self.shape]),
+            nn.Tanh()
+        )
+
+        self.density_net = nn.Sequential(
+            Unet(
+                spatial_dims=3,
+                in_channels=1,
+                out_channels=1,
+                channels=(64, 128, 256, 512, 1024),
+                strides=(2, 2, 2, 2),
+                num_res_units=2,
+                kernel_size=3,
+                up_kernel_size=3,
+                act=("LeakyReLU", {"inplace": True}),
+                norm=Norm.BATCH,
+                # dropout=0.5,
+            ),
+            nn.Tanh()
+        )
+
+        self.mixture_net = nn.Sequential(
+            Unet(
+                spatial_dims=3,
+                in_channels=2,
+                out_channels=1,
+                channels=(64, 128, 256, 512, 1024),
+                strides=(2, 2, 2, 2),
+                num_res_units=2,
+                kernel_size=3,
+                up_kernel_size=3,
+                act=("LeakyReLU", {"inplace": True}),
+                norm=Norm.BATCH,
+                # dropout=0.5,
+            ),
+            nn.Tanh()
+        )
+
+        self.opacity_net = nn.Sequential(
+            Unet(
+                spatial_dims=3,
+                in_channels=1,
+                out_channels=1,
+                channels=(64, 128, 256, 512, 1024),
+                strides=(2, 2, 2, 2),
+                num_res_units=2,
+                kernel_size=3,
+                up_kernel_size=3,
+                act=("LeakyReLU", {"inplace": True}),
+                norm=Norm.BATCH,
+                # dropout=0.5,
+            ),
+            nn.Tanh()
+        )
+
+    def forward(self, figures):
+        clarity = self.clarity_net(figures * 2.0 - 1.0)
+        density = self.density_net(clarity)
+        volumes = self.mixture_net(torch.cat([clarity, density], dim=1)) * 0.5 + 0.5
+        return volumes
+    
+    def forward_opacity(self, volume):
+        return self.clarity_net(volume * 2.0 - 1.0) * 0.5 + 0.5
 
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str] = 'evaluation'):
         _device = batch["image3d"].device
         image3d = batch["image3d"]
         image2d = batch["image2d"]
-        randomt = torch.randint(0, 360, (1,), device=_device).long()
-        random_ = randomt.repeat(self.batch_size)
-
-        # Construct the fixed cameras
-        dist0 = 3.0 * torch.ones_like(random_)
-        elev0 = torch.zeros_like(random_)
-        azim0 = torch.zeros_like(random_)
-        R0, T0 = look_at_view_transform(dist=dist0, elev=elev0, azim=azim0)
-        cameras0 = FoVPerspectiveCameras(R=R0, T=T0).to(_device)
-        singular_images = self.visualizer.forward(image3d=image3d, cameras=cameras0)
+        
+        # Construct the stable camera
+        dist_stable = 4.0 * torch.ones(self.batch_size, device=_device)
+        elev_stable = torch.zeros(self.batch_size, device=_device) * 360
+        azim_stable = torch.zeros(self.batch_size, device=_device) * 360
+        R_stable, T_stable = look_at_view_transform(dist=dist_stable, elev=elev_stable, azim=azim_stable)
+        camera_stable = FoVPerspectiveCameras(R=R_stable, T=T_stable, fov=45).to(_device)
 
         # Construct the random camera
-        dist_ = 3.0 * torch.ones_like(random_)
-        elev_ = torch.zeros_like(random_)
-        azim_ = random_
-        R_, T_ = look_at_view_transform(dist=dist_, elev=elev_, azim=azim_)
-        cameras_ = FoVPerspectiveCameras(R=R_, T=T_).to(_device)
-        explicit_images = self.visualizer.forward(image3d=image3d, cameras=cameras_)
+        dist_random = 4.0 * torch.ones(self.batch_size, device=_device)
+        elev_random = torch.zeros(self.batch_size, device=_device)
+        azim_random = torch.rand(self.batch_size, device=_device) * 360
+        R_random, T_random = look_at_view_transform(dist=dist_random, elev=elev_random, azim=azim_random)
+        camera_random = FoVPerspectiveCameras(R=R_random, T=T_random, fov=45).to(_device)
 
-        implicit_images = singular_images
-        expected_images = image2d
-        concated_inputs = torch.cat([implicit_images, expected_images], dim=0)
-        concated_images = self.unet_model.forward(concated_inputs, random_.repeat(2))
-        implicit_output, expected_output = concated_images[:self.batch_size], concated_images[self.batch_size:]
+        # CT pathway
+        src_volume_ct = image3d
+        src_opaque_ct = self.opacity_net(src_volume_ct)
+        est_figure_ct_stable = self.visualizer.forward(
+            image3d=src_volume_ct, 
+            opacity=src_opaque_ct, 
+            cameras=camera_stable
+        )
+        est_figure_ct_random = self.visualizer.forward(
+            image3d=src_volume_ct, 
+            opacity=src_opaque_ct, 
+            cameras=camera_random
+        )
+        est_volume_ct = self.forward(est_figure_ct_stable)
+        est_opaque_ct = self.opacity_net(est_volume_ct)
+        rec_figure_ct_stable = self.visualizer.forward(
+            image3d=est_volume_ct, 
+            opacity=est_opaque_ct, 
+            cameras=camera_stable
+        )
+        rec_figure_ct_random = self.visualizer.forward(
+            image3d=est_volume_ct, 
+            opacity=est_opaque_ct, 
+            cameras=camera_random
+        )
 
-        # # # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
-        # # for t in tqdm(torch.arange(0, int(randomt)), desc='Running forward pass', total=int(randomt)):
-        # #     concated_images = self.unet_model.forward(
-        # #         concated_images, t.repeat(2*self.batch_size).to(_device))
+        # XR pathway
+        src_figure_xr_stable = image2d
+        est_volume_xr = self.forward(src_figure_xr_stable)
+        est_opaque_xr = self.opacity_net(est_volume_xr)
+        est_figure_xr_stable = self.visualizer.forward(
+            image3d=est_volume_xr, 
+            opacity=est_opaque_xr, 
+            cameras=camera_stable
+        )
 
-        # # Predict the explicit image from singular
-        # # implicit_images, expected_images = concated_images[:self.batch_size], concated_images[self.batch_size:]
-        # # for t in tqdm(range(0, numsteps), desc = 'Sampling loop time step', total = numsteps):
-        # for t in tqdm(torch.arange(start=0, end=int(randomt), step=self.stepsize), desc='Running forward pass', total=int(randomt/self.stepsize)):
-        #     # implicit_images = self.unet_model.forward(implicit_images, t.repeat(self.batch_size).to(_device))
-        #     # expected_images = self.unet_model.forward(expected_images, t.repeat(self.batch_size).to(_device))
-        #     concated_images = self.unet_model.forward(concated_images, t.detach().repeat(2*self.batch_size).to(_device))
-        # implicit_output, expected_output = concated_images[:self.batch_size], concated_images[self.batch_size:]
+        # Compute the loss
+        im3d_loss = self.loss(est_volume_ct, src_volume_ct)
+        im2d_loss = self.loss(est_figure_ct_stable, rec_figure_ct_stable) \
+                  + self.loss(est_figure_ct_random, rec_figure_ct_random) \
+                  + self.loss(src_figure_xr_stable, est_figure_xr_stable) 
 
         if batch_idx == 0:
-            viz2d = torch.cat([singular_images,
-                               explicit_images,
-                               implicit_output,
-                               image2d,
-                               expected_output,
-                               ], dim=-2).transpose(2, 3)
-            grid = torchvision.utils.make_grid(
-                viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
+            viz2d = torch.cat(
+                        [
+                            torch.cat([src_volume_ct[..., self.shape//2, :],
+                                       src_opaque_ct[..., self.shape//2, :],
+                                       est_figure_ct_random,
+                                       est_figure_ct_stable,
+                                       est_volume_ct[..., self.shape//2, :],], dim=-2).transpose(2, 3),
+                            torch.cat([rec_figure_ct_random,
+                                       rec_figure_ct_stable,
+                                       src_figure_xr_stable,
+                                       est_volume_xr[..., self.shape//2, :],
+                                       est_figure_xr_stable,], dim=-2).transpose(2, 3)
+                        ], dim=-2)
+            grid = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
             tensorboard = self.logger.experiment
             tensorboard.add_image(f'{stage}_samples', grid.clamp(0., 1.), self.current_epoch*self.batch_size + batch_idx)
 
-        loss = self.loss(explicit_images, implicit_output)
-        info = {f'loss': loss}
+        self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+        self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+
+        info = {f'loss': 3*im3d_loss + im2d_loss}
         return info
 
     def training_step(self, batch, batch_idx):
