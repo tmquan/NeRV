@@ -35,7 +35,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning import Trainer, LightningModule
 from argparse import ArgumentParser
-
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing import Optional, Sequence
 
 def join_cameras_as_batch(cameras_list: Sequence[CamerasBase]) -> CamerasBase:
@@ -104,6 +104,8 @@ class NeRVLightningModule(LightningModule):
         self.logsdir = hparams.logsdir
         self.lr = hparams.lr
         self.shape = hparams.shape
+        self.lpips = hparams.lpips
+
         self.weight_decay = hparams.weight_decay
         self.batch_size = hparams.batch_size
         self.devices = hparams.devices
@@ -135,7 +137,8 @@ class NeRVLightningModule(LightningModule):
         # )
         # self.numsteps = 60
 
-        self.loss = nn.SmoothL1Loss(reduction="mean", beta=0.01)
+        self.loss_smoothl1 = nn.SmoothL1Loss(reduction="mean", beta=0.01)
+        self.loss_lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
 
         self.clarity_net = nn.Sequential(
             Unet(
@@ -271,10 +274,18 @@ class NeRVLightningModule(LightningModule):
         )
 
         # Compute the loss
-        im3d_loss = self.loss(est_volume_ct, src_volume_ct)
-        im2d_loss = self.loss(est_figure_ct_stable, rec_figure_ct_stable) \
-                  + self.loss(est_figure_ct_random, rec_figure_ct_random) \
-                  + self.loss(src_figure_xr_stable, est_figure_xr_stable) 
+        im3d_loss = self.loss_smoothl1(est_volume_ct, src_volume_ct)
+        im2d_loss = self.loss_smoothl1(est_figure_ct_stable, rec_figure_ct_stable) \
+                  + self.loss_smoothl1(est_figure_ct_random, rec_figure_ct_random) \
+                  + self.loss_smoothl1(src_figure_xr_stable, est_figure_xr_stable)
+        loss = 3 * im3d_loss + im2d_loss 
+        if self.lpips:
+            rescaling = lambda x: (x.repeat(1, 3, 1, 1) * 2.0 - 1.0)  
+            im2d_lpips = self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_stable)) \
+                       + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_random)) \
+                       + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(est_figure_xr_stable)) 
+            self.log(f'{stage}_im2d_lpips', im2d_lpips, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+            loss += im2d_lpips
 
         if batch_idx == 0:
             viz2d = torch.cat(
@@ -297,7 +308,7 @@ class NeRVLightningModule(LightningModule):
         self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
         self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
 
-        info = {f'loss': 3*im3d_loss + im2d_loss}
+        info = {f'loss': loss}
         return info
 
     def training_step(self, batch, batch_idx):
@@ -311,8 +322,7 @@ class NeRVLightningModule(LightningModule):
 
     def _common_epoch_end(self, outputs, stage: Optional[str] = 'common'):
         loss = torch.stack([x[f'loss'] for x in outputs]).mean()
-        self.log(f'{stage}_loss_epoch', loss, on_step=False,
-                 prog_bar=True, logger=True, sync_dist=True)
+        self.log(f'{stage}_loss_epoch', loss, on_step=False, prog_bar=True, logger=True, sync_dist=True)
 
     def train_epoch_end(self, outputs):
         return self._common_epoch_end(outputs, stage='train')
@@ -324,44 +334,30 @@ class NeRVLightningModule(LightningModule):
         return self._common_epoch_end(outputs, stage='test')
 
     def configure_optimizers(self):
-        optimizer = torch.optim.RAdam(
-            self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=10, eta_min=self.lr / 10
-        )
+        optimizer = torch.optim.RAdam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=self.lr / 10)
         return [optimizer], [scheduler]
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--conda_env", type=str, default="NeRV")
-    parser.add_argument("--notification_email", type=str,
-                        default="quantm88@gmail.com")
+    parser.add_argument("--notification_email", type=str, default="quantm88@gmail.com")
 
     # Model arguments
-    parser.add_argument("--batch_size", type=int,
-                        default=1, help="size of the batches")
-    parser.add_argument("--shape", type=int, default=256,
-                        help="spatial size of the tensor")
-    parser.add_argument("--epochs", type=int, default=501,
-                        help="number of epochs")
-    parser.add_argument("--train_samples", type=int,
-                        default=1000, help="training samples")
-    parser.add_argument("--val_samples", type=int,
-                        default=400, help="validation samples")
-    parser.add_argument("--test_samples", type=int,
-                        default=400, help="test samples")
+    parser.add_argument("--batch_size", type=int, default=1, help="size of the batches")
+    parser.add_argument("--shape", type=int, default=256, help="spatial size of the tensor")
+    parser.add_argument("--epochs", type=int, default=501, help="number of epochs")
+    parser.add_argument("--train_samples", type=int, default=1000, help="training samples")
+    parser.add_argument("--val_samples", type=int, default=400, help="validation samples")
+    parser.add_argument("--test_samples", type=int, default=400, help="test samples")
 
-    parser.add_argument("--weight_decay", type=float,
-                        default=1e-4, help="Weight decay")
-    parser.add_argument("--lr", type=float, default=1e-4,
-                        help="adam: learning rate")
-    parser.add_argument("--ckpt", type=str, default=None,
-                        help="path to checkpoint")
-    parser.add_argument("--logsdir", type=str,
-                        default='logs', help="logging directory")
-    parser.add_argument("--datadir", type=str,
-                        default='data', help="data directory")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--lr", type=float, default=1e-4, help="adam: learning rate")
+    parser.add_argument("--ckpt", type=str, default=None, help="path to checkpoint")
+    parser.add_argument("--logsdir", type=str, default='logsfrecaling', help="logging directory")
+    parser.add_argument("--datadir", type=str, default='data', help="data directory")
+    parser.add_argument("--lpips", action='store_true', help="with lpips")
 
     parser = Trainer.add_argparse_args(parser)
 
@@ -380,9 +376,9 @@ if __name__ == "__main__":
         every_n_epochs=5,
     )
     lr_callback = LearningRateMonitor(logging_interval='step')
+
     # Logger
-    tensorboard_logger = TensorBoardLogger(
-        save_dir=hparams.logsdir, log_graph=True)
+    tensorboard_logger = TensorBoardLogger(save_dir=hparams.logsdir, log_graph=True)
 
     # Init model with callbacks
     trainer = Trainer.from_argparse_args(
@@ -404,23 +400,15 @@ if __name__ == "__main__":
 
     # Create data module
     train_image3d_folders = [
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/NSCLC/processed/train/images'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-0'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-1'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-2'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-3'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-4'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/NSCLC/processed/train/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-0'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-1'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-2'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-3'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-4'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Imagenglab/processed/train/images'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/MELA2022/raw/train/images'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/MELA2022/raw/val/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/train/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/val/images'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
 
@@ -439,14 +427,10 @@ if __name__ == "__main__":
     ]
 
     train_image2d_folders = [
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/JSRT/processed/images/'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/ChinaSet/processed/images/'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/Montgomery/processed/images/'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/train/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/JSRT/processed/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/ChinaSet/processed/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Montgomery/processed/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/train/images/'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/test/images/'),
 
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/T62020/20200501/raw/images'),
@@ -459,23 +443,15 @@ if __name__ == "__main__":
     ]
 
     val_image3d_folders = [
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/NSCLC/processed/train/images'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-0'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-1'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-2'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-3'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-4'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/NSCLC/processed/train/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-0'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-1'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-2'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-3'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MOSMED/processed/train/images/CT-4'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Imagenglab/processed/train/images'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/MELA2022/raw/train/images'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/MELA2022/raw/val/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/train/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/val/images'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
 
@@ -491,15 +467,11 @@ if __name__ == "__main__":
     ]
 
     val_image2d_folders = [
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/JSRT/processed/images/'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/ChinaSet/processed/images/'),
-        os.path.join(hparams.datadir,
-                     'ChestXRLungSegmentation/Montgomery/processed/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/JSRT/processed/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/ChinaSet/processed/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Montgomery/processed/images/'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/train/images/'),
-        os.path.join(
-            hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/test/images/'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/test/images/'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/T62020/20200501/raw/images'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/T62021/20211101/raw/images'),
         # # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/VinDr/v1/processed/train/images/'),
@@ -531,8 +503,7 @@ if __name__ == "__main__":
     model = NeRVLightningModule(
         hparams=hparams
     )
-    model = model.load_from_checkpoint(
-        hparams.ckpt, strict=False) if hparams.ckpt is not None else model
+    model = model.load_from_checkpoint(hparams.ckpt, strict=False) if hparams.ckpt is not None else model
 
     trainer.fit(
         model,

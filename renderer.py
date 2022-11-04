@@ -27,10 +27,8 @@ class FigureRenderer(nn.Module):
         screen_RGBA = screen_RGBA.permute(0, 3, 2, 1) # 3 for NeRF
         screen_RGB = screen_RGBA[:, :3].mean(dim=1, keepdim=True)
         minimized = lambda x: (x + eps)/(x.max() + eps)
-        normalized = lambda x: (x - x.min() + eps)/(x.max() - x.min() + eps)
-
-        def standardized(x): return (x - x.mean()) / \
-            (x.std() + eps)  # 1e-6 to avoid zero division
+        normalized = lambda x: (x - x.min() + eps) / (x.max() - x.min() + eps)
+        standardized = lambda x: (x - x.mean()) / (x.std() + eps)  # 1e-6 to avoid zero division
         if norm_type == "minimized":
             screen_RGB = minimized(screen_RGB)
         elif norm_type == "normalized":
