@@ -138,7 +138,7 @@ class NeRVLightningModule(LightningModule):
         # self.numsteps = 60
 
         self.loss_smoothl1 = nn.SmoothL1Loss(reduction="mean", beta=0.01)
-        self.loss_lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
+        # self.loss_lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
 
         self.clarity_net = nn.Sequential(
             Unet(
@@ -150,7 +150,7 @@ class NeRVLightningModule(LightningModule):
                 num_res_units=4,
                 kernel_size=3,
                 up_kernel_size=3,
-                act=("LeakyReLU", {"inplace": True}),
+                act=("GELU"),
                 norm=Norm.BATCH,
                 # dropout=0.5,
             ),
@@ -168,7 +168,7 @@ class NeRVLightningModule(LightningModule):
                 num_res_units=2,
                 kernel_size=3,
                 up_kernel_size=3,
-                act=("LeakyReLU", {"inplace": True}),
+                act=("GELU"),
                 norm=Norm.BATCH,
                 # dropout=0.5,
             ),
@@ -185,7 +185,7 @@ class NeRVLightningModule(LightningModule):
                 num_res_units=2,
                 kernel_size=3,
                 up_kernel_size=3,
-                act=("LeakyReLU", {"inplace": True}),
+                act=("GELU"),
                 norm=Norm.BATCH,
                 # dropout=0.5,
             ),
@@ -202,7 +202,7 @@ class NeRVLightningModule(LightningModule):
         #         num_res_units=2,
         #         kernel_size=3,
         #         up_kernel_size=3,
-        #         act=("LeakyReLU", {"inplace": True}),
+        #         act=("GELU"),
         #         norm=Norm.BATCH,
         #         # dropout=0.5,
         #     ),
@@ -279,13 +279,14 @@ class NeRVLightningModule(LightningModule):
                   + self.loss_smoothl1(est_figure_ct_random, rec_figure_ct_random) \
                   + self.loss_smoothl1(src_figure_xr_stable, est_figure_xr_stable)
         loss = 3 * im3d_loss + im2d_loss 
-        if self.lpips:
-            rescaling = lambda x: (x.repeat(1, 3, 1, 1) * 2.0 - 1.0)  
-            im2d_lpips = self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_stable)) \
-                       + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_random)) \
-                       + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(est_figure_xr_stable)) 
-            self.log(f'{stage}_im2d_lpips', im2d_lpips, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-            loss += im2d_lpips
+
+        # if self.lpips:
+        #     rescaling = lambda x: (x.repeat(1, 3, 1, 1) * 2.0 - 1.0)  
+        #     im2d_lpips = self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_stable)) \
+        #                + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_random)) \
+        #                + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(est_figure_xr_stable)) 
+        #     self.log(f'{stage}_im2d_lpips', im2d_lpips, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+        #     loss += im2d_lpips
 
         if batch_idx == 0:
             viz2d = torch.cat(

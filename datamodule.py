@@ -22,7 +22,7 @@ from monai.transforms import (
     RandZoomd, 
     RandScaleCropd, 
     CropForegroundd,
-    Resized, Rotate90d, 
+    Resized, Rotate90d, HistogramNormalized,
     ScaleIntensityd,
     ScaleIntensityRanged, 
     ToTensord,
@@ -136,12 +136,13 @@ class NeRVDataModule(LightningDataModule):
                     ],
                 ),
                 ScaleIntensityd(keys=["image2d"], minv=0.0, maxv=1.0,),
+                HistogramNormalized(keys=["image2d"], min=0.0, max=1.0,),
                 OneOf([
-                    ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
-                            a_min=-200, 
-                            a_max=1500,
-                            b_min=0.0,
-                            b_max=1.0),
+                    # ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
+                    #         a_min=-200, 
+                    #         a_max=1500,
+                    #         b_min=0.0,
+                    #         b_max=1.0),
                     ScaleIntensityRanged(keys=["image3d"], clip=True,  # Full range
                             a_min=-500, #-200, 
                             a_max=3071, #1500,
@@ -163,8 +164,8 @@ class NeRVDataModule(LightningDataModule):
                 # RandAffined(keys=["image3d"], rotate_range=None, shear_range=None, translate_range=20, scale_range=None),
                 # CropForegroundd(keys=["image3d"], source_key="image3d", select_fn=lambda x: x>0, margin=0),
                 # CropForegroundd(keys=["image2d"], source_key="image2d", select_fn=lambda x: x>0, margin=0),
-                RandZoomd(keys=["image3d"], prob=1.0, min_zoom=0.8, max_zoom=1.0, padding_mode='constant', mode=["trilinear"], align_corners=True), 
-                RandZoomd(keys=["image2d"], prob=1.0, min_zoom=0.8, max_zoom=1.0, padding_mode='constant', mode=["area"]), 
+                RandZoomd(keys=["image3d"], prob=1.0, min_zoom=0.8, max_zoom=1.1, padding_mode='constant', mode=["trilinear"], align_corners=True), 
+                RandZoomd(keys=["image2d"], prob=1.0, min_zoom=0.8, max_zoom=1.1, padding_mode='constant', mode=["area"]), 
                 Resized(keys=["image3d"], spatial_size=self.shape, size_mode="longest", mode=["trilinear"], align_corners=True),
                 Resized(keys=["image2d"], spatial_size=self.shape, size_mode="longest", mode=["area"]),
                 DivisiblePadd(keys=["image3d", "image2d"], k=self.shape, mode="constant", constant_values=0),
@@ -211,12 +212,13 @@ class NeRVDataModule(LightningDataModule):
                     ],
                 ), 
                 ScaleIntensityd(keys=["image2d"], minv=0.0, maxv=1.0,),
+                HistogramNormalized(keys=["image2d"], min=0.0, max=1.0,),
                 OneOf([
-                    ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
-                            a_min=-200, 
-                            a_max=1500,
-                            b_min=0.0,
-                            b_max=1.0),
+                    # ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
+                    #         a_min=-200, 
+                    #         a_max=1500,
+                    #         b_min=0.0,
+                    #         b_max=1.0),
                     ScaleIntensityRanged(keys=["image3d"], clip=True,  # Full range
                             a_min=-500, #-200, 
                             a_max=3071, #1500,
