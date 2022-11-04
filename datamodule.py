@@ -138,16 +138,16 @@ class NeRVDataModule(LightningDataModule):
                 ScaleIntensityd(keys=["image2d"], minv=0.0, maxv=1.0,),
                 HistogramNormalized(keys=["image2d"], min=0.0, max=1.0,),
                 OneOf([
-                    # ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
-                    #         a_min=-200, 
-                    #         a_max=1500,
-                    #         b_min=0.0,
-                    #         b_max=1.0),
-                    ScaleIntensityRanged(keys=["image3d"], clip=True,  # Full range
-                            a_min=-500, #-200, 
-                            a_max=3071, #1500,
+                    ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
+                            a_min=-200, 
+                            a_max=1500,
                             b_min=0.0,
                             b_max=1.0),
+                    # ScaleIntensityRanged(keys=["image3d"], clip=True,  # Full range
+                    #         a_min=-500, #-200, 
+                    #         a_max=3071, #1500,
+                    #         b_min=0.0,
+                    #         b_max=1.0),
                 ]),
                 CropForegroundd(keys=["image3d"], source_key="image3d", select_fn=(lambda x: x>0), margin=0),
                 CropForegroundd(keys=["image2d"], source_key="image2d", select_fn=(lambda x: x>0), margin=0),
@@ -214,16 +214,16 @@ class NeRVDataModule(LightningDataModule):
                 ScaleIntensityd(keys=["image2d"], minv=0.0, maxv=1.0,),
                 HistogramNormalized(keys=["image2d"], min=0.0, max=1.0,),
                 OneOf([
-                    # ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
-                    #         a_min=-200, 
-                    #         a_max=1500,
-                    #         b_min=0.0,
-                    #         b_max=1.0),
-                    ScaleIntensityRanged(keys=["image3d"], clip=True,  # Full range
-                            a_min=-500, #-200, 
-                            a_max=3071, #1500,
+                    ScaleIntensityRanged(keys=["image3d"], clip=True,  # CTXR range
+                            a_min=-200, 
+                            a_max=1500,
                             b_min=0.0,
                             b_max=1.0),
+                    # ScaleIntensityRanged(keys=["image3d"], clip=True,  # Full range
+                    #         a_min=-500, #-200, 
+                    #         a_max=3071, #1500,
+                    #         b_min=0.0,
+                    #         b_max=1.0),
                 ]),
                 CropForegroundd(keys=["image3d"], source_key="image3d", select_fn=(lambda x: x>0), margin=0),
                 CropForegroundd(keys=["image2d"], source_key="image2d", select_fn=(lambda x: x>0), margin=0),
