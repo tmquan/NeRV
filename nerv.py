@@ -222,8 +222,8 @@ class NeRVLightningModule(LightningModule):
         
         # Construct the stable camera
         dist_stable = 4.0 * torch.ones(self.batch_size, device=_device)
-        elev_stable = torch.zeros(self.batch_size, device=_device) * 180 - 90
-        azim_stable = torch.zeros(self.batch_size, device=_device) * 360
+        elev_stable = torch.zeros(self.batch_size, device=_device) 
+        azim_stable = torch.zeros(self.batch_size, device=_device) 
         R_stable, T_stable = look_at_view_transform(dist=dist_stable, elev=elev_stable, azim=azim_stable)
         camera_stable = FoVPerspectiveCameras(R=R_stable, T=T_stable, fov=45).to(_device)
 
