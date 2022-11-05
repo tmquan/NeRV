@@ -223,6 +223,14 @@ class NeRVLightningModule(LightningModule):
         image3d = batch["image3d"]
         image2d = batch["image2d"]
         
+        if stage=='train':
+             # Calculate interpolation
+            factor = torch.rand(self.batch_size, 1, 1, 1, 1, device=_device)
+            volume = image3d
+            noises = torch.rand_like(volume)
+            factor = factor.expand_as(volume)
+            image3d = factor * volume + (1 - factor) * noises
+
         # Construct the locked camera
         dist_locked = 4.0 * torch.ones(self.batch_size, device=_device)
         elev_locked = torch.zeros(self.batch_size, device=_device) 
@@ -411,8 +419,8 @@ if __name__ == "__main__":
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Imagenglab/processed/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/val/images'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
 
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2019/raw/train/rawdata/'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2020/raw/train/rawdata/'),
@@ -454,8 +462,8 @@ if __name__ == "__main__":
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Imagenglab/processed/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/val/images'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
 
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2019/raw/train/rawdata/'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2020/raw/train/rawdata/'),
