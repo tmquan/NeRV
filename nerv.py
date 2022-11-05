@@ -115,8 +115,8 @@ class NeRVLightningModule(LightningModule):
             image_width=self.shape,
             image_height=self.shape,
             n_pts_per_ray=400,  # self.shape,
-            min_depth=0.1,
-            max_depth=4.5,
+            min_depth=2.0,
+            max_depth=6.0,
         )
 
         raymarcher = EmissionAbsorptionRaymarcherFrontToBack()  # X-Ray Raymarcher
@@ -411,8 +411,8 @@ if __name__ == "__main__":
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Imagenglab/processed/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/val/images'),
-        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
-        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
 
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2019/raw/train/rawdata/'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2020/raw/train/rawdata/'),
@@ -454,8 +454,8 @@ if __name__ == "__main__":
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Imagenglab/processed/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/train/images'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/MELA2022/raw/val/images'),
-        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
-        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/train/images'),
+        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/AMOS2022/raw/val/images'),
 
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2019/raw/train/rawdata/'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/Verse2020/raw/train/rawdata/'),
