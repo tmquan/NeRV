@@ -240,7 +240,7 @@ class NeRVLightningModule(LightningModule):
         # XR pathway
         src_figure_xr_stable = image2d
         est_volume_xr = self.forward(src_figure_xr_stable)
-        est_opaque_xr = torch.rand_like(est_volume_xr) if stage=="train" else torch.ones_like(est_volume_xr)
+        est_opaque_xr = torch.ones_like(est_volume_xr)
         est_figure_xr_stable = self.visualizer.forward(
             image3d=est_volume_xr, 
             opacity=est_opaque_xr, 
@@ -249,7 +249,7 @@ class NeRVLightningModule(LightningModule):
 
         # CT pathway
         src_volume_ct = image3d
-        src_opaque_ct = torch.rand_like(src_volume_ct) if stage=="train" else torch.ones_like(src_volume_ct)
+        src_opaque_ct = torch.ones_like(src_volume_ct)
         est_figure_ct_stable = self.visualizer.forward(
             image3d=src_volume_ct, 
             opacity=src_opaque_ct, 
@@ -261,7 +261,7 @@ class NeRVLightningModule(LightningModule):
             cameras=camera_random
         )
         est_volume_ct = self.forward(est_figure_ct_stable)
-        est_opaque_ct = torch.rand_like(est_volume_ct) if stage=="train" else torch.ones_like(est_volume_ct)
+        est_opaque_ct = torch.ones_like(est_volume_ct)
         rec_figure_ct_stable = self.visualizer.forward(
             image3d=est_volume_ct, 
             opacity=est_opaque_ct, 
@@ -336,7 +336,8 @@ class NeRVLightningModule(LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.RAdam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=self.lr / 10)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=self.lr / 10)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 100, 200], gamma=0.1)
         return [optimizer], [scheduler]
 
 
@@ -348,7 +349,7 @@ if __name__ == "__main__":
     # Model arguments
     parser.add_argument("--batch_size", type=int, default=1, help="size of the batches")
     parser.add_argument("--shape", type=int, default=256, help="spatial size of the tensor")
-    parser.add_argument("--epochs", type=int, default=501, help="number of epochs")
+    parser.add_argument("--epochs", type=int, default=301, help="number of epochs")
     parser.add_argument("--train_samples", type=int, default=1000, help="training samples")
     parser.add_argument("--val_samples", type=int, default=400, help="validation samples")
     parser.add_argument("--test_samples", type=int, default=400, help="test samples")
