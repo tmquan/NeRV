@@ -223,12 +223,12 @@ class NeRVLightningModule(LightningModule):
         image3d = batch["image3d"]
         image2d = batch["image2d"]
         
-        # Construct the stable camera
-        dist_stable = 4.0 * torch.ones(self.batch_size, device=_device)
-        elev_stable = torch.zeros(self.batch_size, device=_device) 
-        azim_stable = torch.zeros(self.batch_size, device=_device) 
-        R_stable, T_stable = look_at_view_transform(dist=dist_stable, elev=elev_stable, azim=azim_stable)
-        camera_stable = FoVPerspectiveCameras(R=R_stable, T=T_stable, fov=45).to(_device)
+        # Construct the locked camera
+        dist_locked = 4.0 * torch.ones(self.batch_size, device=_device)
+        elev_locked = torch.zeros(self.batch_size, device=_device) 
+        azim_locked = torch.zeros(self.batch_size, device=_device) 
+        R_locked, T_locked = look_at_view_transform(dist=dist_locked, elev=elev_locked, azim=azim_locked)
+        camera_locked = FoVPerspectiveCameras(R=R_locked, T=T_locked, fov=45).to(_device)
 
         # Construct the random camera
         dist_random = 4.0 * torch.ones(self.batch_size, device=_device)
@@ -238,34 +238,34 @@ class NeRVLightningModule(LightningModule):
         camera_random = FoVPerspectiveCameras(R=R_random, T=T_random, fov=45).to(_device)
 
         # XR pathway
-        src_figure_xr_stable = image2d
-        est_volume_xr = self.forward(src_figure_xr_stable)
+        src_figure_xr_hidden = image2d
+        est_volume_xr = self.forward(src_figure_xr_hidden)
         est_opaque_xr = torch.ones_like(est_volume_xr)
-        est_figure_xr_stable = self.visualizer.forward(
+        est_figure_xr_locked = self.visualizer.forward(
             image3d=est_volume_xr, 
             opacity=est_opaque_xr, 
-            cameras=camera_stable
+            cameras=camera_locked
         )
 
         # CT pathway
         src_volume_ct = image3d
         src_opaque_ct = torch.ones_like(src_volume_ct)
-        est_figure_ct_stable = self.visualizer.forward(
+        est_figure_ct_locked = self.visualizer.forward(
             image3d=src_volume_ct, 
             opacity=src_opaque_ct, 
-            cameras=camera_stable
+            cameras=camera_locked
         )
         est_figure_ct_random = self.visualizer.forward(
             image3d=src_volume_ct, 
             opacity=src_opaque_ct, 
             cameras=camera_random
         )
-        est_volume_ct = self.forward(est_figure_ct_stable)
+        est_volume_ct = self.forward(est_figure_ct_locked) # How to augment here?
         est_opaque_ct = torch.ones_like(est_volume_ct)
-        rec_figure_ct_stable = self.visualizer.forward(
+        rec_figure_ct_locked = self.visualizer.forward(
             image3d=est_volume_ct, 
             opacity=est_opaque_ct, 
-            cameras=camera_stable
+            cameras=camera_locked
         )
         rec_figure_ct_random = self.visualizer.forward(
             image3d=est_volume_ct, 
@@ -275,16 +275,16 @@ class NeRVLightningModule(LightningModule):
 
         # Compute the loss
         im3d_loss = self.loss_smoothl1(est_volume_ct, src_volume_ct)
-        im2d_loss = self.loss_smoothl1(est_figure_ct_stable, rec_figure_ct_stable) \
+        im2d_loss = self.loss_smoothl1(est_figure_ct_locked, rec_figure_ct_locked) \
                   + self.loss_smoothl1(est_figure_ct_random, rec_figure_ct_random) \
-                  + self.loss_smoothl1(src_figure_xr_stable, est_figure_xr_stable)
+                  + self.loss_smoothl1(src_figure_xr_hidden, est_figure_xr_locked)
         loss = 3 * im3d_loss + im2d_loss 
 
         # if self.lpips:
         #     rescaling = lambda x: (x.repeat(1, 3, 1, 1) * 2.0 - 1.0)  
-        #     im2d_lpips = self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_stable)) \
-        #                + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(rec_figure_ct_random)) \
-        #                + self.loss_lpips(rescaling(src_figure_xr_stable), rescaling(est_figure_xr_stable)) 
+        #     im2d_lpips = self.loss_lpips(rescaling(src_figure_xr_hidden), rescaling(rec_figure_ct_locked)) \
+        #                + self.loss_lpips(rescaling(src_figure_xr_hidden), rescaling(rec_figure_ct_random)) \
+        #                + self.loss_lpips(rescaling(src_figure_xr_hidden), rescaling(est_figure_xr_locked)) 
         #     self.log(f'{stage}_im2d_lpips', im2d_lpips, on_step=(stage == 'train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
         #     loss += im2d_lpips
 
@@ -294,13 +294,13 @@ class NeRVLightningModule(LightningModule):
                             torch.cat([src_volume_ct[..., self.shape//2, :],
                                        src_opaque_ct[..., self.shape//2, :],
                                        est_figure_ct_random,
-                                       est_figure_ct_stable,
+                                       est_figure_ct_locked,
                                        est_volume_ct[..., self.shape//2, :],], dim=-2).transpose(2, 3),
                             torch.cat([rec_figure_ct_random,
-                                       rec_figure_ct_stable,
-                                       src_figure_xr_stable,
+                                       rec_figure_ct_locked,
+                                       src_figure_xr_hidden,
                                        est_volume_xr[..., self.shape//2, :],
-                                       est_figure_xr_stable,], dim=-2).transpose(2, 3)
+                                       est_figure_xr_locked,], dim=-2).transpose(2, 3)
                         ], dim=-2)
             grid = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
             tensorboard = self.logger.experiment
