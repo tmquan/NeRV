@@ -120,7 +120,7 @@ class NeRVDataModule(LightningDataModule):
             [
                 LoadImaged(keys=["image3d", "image2d"]),
                 AddChanneld(keys=["image3d", "image2d"],),
-                Spacingd(keys=["image3d"], pixdim=(1.0, 1.0, 1.0), mode=["bilinear"]),  
+                Spacingd(keys=["image3d"], pixdim=(1.0, 1.0, 1.0), mode=["bilinear"], align_corners=True),  
                 # Rotate90d(keys=["image2d"], k=3),
                 # RandFlipd(keys=["image2d"], prob=1.0, spatial_axis=1),
                 OneOf([
@@ -196,7 +196,7 @@ class NeRVDataModule(LightningDataModule):
             [
                 LoadImaged(keys=["image3d", "image2d"]),
                 AddChanneld(keys=["image3d", "image2d"],),
-                Spacingd(keys=["image3d"], pixdim=(1.0, 1.0, 1.0), mode=["bilinear"]),  
+                Spacingd(keys=["image3d"], pixdim=(1.0, 1.0, 1.0), mode=["bilinear"], align_corners=True),  
                 # Rotate90d(keys=["image2d"], k=3),
                 # RandFlipd(keys=["image2d"], prob=1.0, spatial_axis=1), #Right cardio
                 OneOf([
