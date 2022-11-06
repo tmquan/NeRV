@@ -229,7 +229,8 @@ class NeRVLightningModule(LightningModule):
             volume = image3d
             noises = torch.rand_like(volume)
             factor = factor.expand_as(volume)
-            image3d = factor * volume + (1 - factor) * noises
+            if batch_idx%2==1:
+                image3d = factor * volume + (1 - factor) * noises
 
         # Construct the locked camera
         dist_locked = 4.0 * torch.ones(self.batch_size, device=_device)
@@ -399,7 +400,7 @@ if __name__ == "__main__":
             lr_callback,
             checkpoint_callback,
         ],
-        # accumulate_grad_batches=4,
+        accumulate_grad_batches=4,
         # strategy="ddp_sharded", #"horovod", #"deepspeed", #"ddp_sharded",
         strategy="fsdp",  # "fsdp", #"ddp_sharded", #"horovod", #"deepspeed", #"ddp_sharded",
         precision=16,  # if hparams.use_amp else 32,
