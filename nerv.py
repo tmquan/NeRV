@@ -234,7 +234,7 @@ class NeRVLightningModule(LightningModule):
 
         # Construct the locked camera
         dist_locked = 4.0 * torch.ones(self.batch_size, device=_device)
-        elev_locked = torch.rand(self.batch_size, device=_device) * 180 - 90 # self adjusted elevation
+        elev_locked = torch.ones(self.batch_size, device=_device) * 15 # self adjusted elevation
         azim_locked = torch.ones(self.batch_size, device=_device) * 0
         R_locked, T_locked = look_at_view_transform(dist=dist_locked, elev=elev_locked, azim=azim_locked)
         camera_locked = FoVPerspectiveCameras(R=R_locked, T=T_locked, fov=45).to(_device)
