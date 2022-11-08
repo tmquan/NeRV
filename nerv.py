@@ -213,7 +213,7 @@ class NeRVLightningModule(LightningModule):
         clarity = self.clarity_net(figures)
         density = self.density_net(clarity)
         volumes = self.mixture_net(torch.cat([clarity, density], dim=1))
-        return volumes
+        return volumes, density, clarity
     
     # def forward_opacity(self, volume):
     #     return self.clarity_net(volume)
@@ -248,7 +248,7 @@ class NeRVLightningModule(LightningModule):
 
         # XR pathway
         src_figure_xr_hidden = image2d
-        est_volume_xr = self.forward(src_figure_xr_hidden)
+        est_volume_xr, _, _  = self.forward(src_figure_xr_hidden)
         est_opaque_xr = torch.ones_like(est_volume_xr)
         est_figure_xr_locked = self.visualizer.forward(
             image3d=est_volume_xr, 
@@ -269,7 +269,8 @@ class NeRVLightningModule(LightningModule):
             opacity=src_opaque_ct, 
             cameras=camera_random
         )
-        est_volume_ct = self.forward(est_figure_ct_locked) # How to augment here?
+        est_volume_ct, est_densty_ct, est_clarty_ct \
+            = self.forward(est_figure_ct_locked) # How to augment here?
         est_opaque_ct = torch.ones_like(est_volume_ct)
         rec_figure_ct_locked = self.visualizer.forward(
             image3d=est_volume_ct, 
@@ -283,7 +284,10 @@ class NeRVLightningModule(LightningModule):
         )
 
         # Compute the loss
-        im3d_loss = self.loss_smoothl1(est_volume_ct, src_volume_ct)
+        im3d_loss = self.loss_smoothl1(src_volume_ct, est_volume_ct) \
+                  + self.loss_smoothl1(src_volume_ct, est_densty_ct) \
+                  + self.loss_smoothl1(src_volume_ct, est_clarty_ct) 
+                  
         im2d_loss = self.loss_smoothl1(est_figure_ct_locked, rec_figure_ct_locked) \
                   + self.loss_smoothl1(est_figure_ct_random, rec_figure_ct_random) \
                   + self.loss_smoothl1(src_figure_xr_hidden, est_figure_xr_locked)
