@@ -155,7 +155,7 @@ class NeRVLightningModule(LightningModule):
                 # dropout=0.5,
             ),
             Reshape(*[1, self.shape, self.shape, self.shape]),
-            nn.Tanh()
+            # nn.Tanh()
         )
 
         self.density_net = nn.Sequential(
@@ -172,7 +172,7 @@ class NeRVLightningModule(LightningModule):
                 norm=Norm.BATCH,
                 # dropout=0.5,
             ),
-            nn.Tanh()
+            # nn.Tanh()
         )
 
         self.mixture_net = nn.Sequential(
@@ -189,7 +189,7 @@ class NeRVLightningModule(LightningModule):
                 norm=Norm.BATCH,
                 # dropout=0.5,
             ),
-            nn.Tanh()
+            # nn.Tanh()
         )
 
         # self.opacity_net = nn.Sequential(
@@ -206,17 +206,17 @@ class NeRVLightningModule(LightningModule):
         #         norm=Norm.BATCH,
         #         # dropout=0.5,
         #     ),
-        #     nn.Tanh()
+        #     # nn.Tanh()
         # )
 
     def forward(self, figures):
-        clarity = self.clarity_net(figures * 2.0 - 1.0)
+        clarity = self.clarity_net(figures)
         density = self.density_net(clarity)
-        volumes = self.mixture_net(torch.cat([clarity, density], dim=1)) * 0.5 + 0.5
+        volumes = self.mixture_net(torch.cat([clarity, density], dim=1))
         return volumes
     
-    def forward_opacity(self, volume):
-        return self.clarity_net(volume * 2.0 - 1.0) * 0.5 + 0.5
+    # def forward_opacity(self, volume):
+    #     return self.clarity_net(volume)
 
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str] = 'evaluation'):
         _device = batch["image3d"].device
