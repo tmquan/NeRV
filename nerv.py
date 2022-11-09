@@ -11,6 +11,8 @@ torch.cuda.empty_cache()
 torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+import kornia 
+
 from renderer import *
 from raysampler import *
 from raymarcher import *
@@ -104,7 +106,7 @@ class NeRVLightningModule(LightningModule):
         self.logsdir = hparams.logsdir
         self.lr = hparams.lr
         self.shape = hparams.shape
-        self.lpips = hparams.lpips
+        self.filter = hparams.filter
 
         self.weight_decay = hparams.weight_decay
         self.batch_size = hparams.batch_size
@@ -210,6 +212,14 @@ class NeRVLightningModule(LightningModule):
         # )
 
     def forward(self, figures):
+        if self.filter=='sobel':
+            filtered = kornia.filters.sobel(figures)
+        elif self.filter=='laplacian':
+            filtered = kornia.filters.laplacian(figures)
+        elif self.filter=='canny':
+            filtered = kornia.filters.canny(figures)            
+        else:
+            filtered = figures
         clarity = self.clarity_net(figures)
         density = self.density_net(clarity)
         volumes = self.mixture_net(torch.cat([clarity, density], dim=1))
@@ -372,7 +382,7 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt", type=str, default=None, help="path to checkpoint")
     parser.add_argument("--logsdir", type=str, default='logsfrecaling', help="logging directory")
     parser.add_argument("--datadir", type=str, default='data', help="data directory")
-    parser.add_argument("--lpips", action='store_true', help="with lpips")
+    parser.add_argument("--filter", type=str, default='sobel', help="None, sobel, laplacian, canny")
 
     parser = Trainer.add_argparse_args(parser)
 
