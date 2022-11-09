@@ -12,7 +12,7 @@ torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 import kornia 
-from rsh import rsh_cart_3
+from rsh import * #rsh_cart_2, rsh_cart_3
 from renderer import *
 from raysampler import *
 from raymarcher import *
@@ -117,7 +117,7 @@ class NeRVLightningModule(LightningModule):
         raysampler = NDCMultinomialRaysampler(  # NDCGridRaysampler(
             image_width=self.shape,
             image_height=self.shape,
-            n_pts_per_ray=400,  # self.shape,
+            n_pts_per_ray=320,  # self.shape,
             min_depth=2.0,
             max_depth=6.0,
         )
@@ -182,7 +182,7 @@ class NeRVLightningModule(LightningModule):
             Unet(
                 spatial_dims=3,
                 in_channels=2,
-                out_channels=16,
+                out_channels=9,
                 channels=(64, 128, 256, 512, 1024),
                 strides=(2, 2, 2, 2),
                 num_res_units=2,
@@ -201,15 +201,16 @@ class NeRVLightningModule(LightningModule):
         xs = torch.linspace(-1, 1, steps=self.shape)
         z, y, x = torch.meshgrid(zs, ys, xs)
         zyx = torch.stack([z, y, x], dim=-1) # torch.Size([100, 100, 100, 3])
-        shw = rsh_cart_3(zyx) # torch.Size([100, 100, 100, 16])
-        self.register_buffer('shweights', shw.unsqueeze(0).permute(0, 4, 1, 2, 3).repeat(self.batch_size, 1, 1, 1, 1))
+        shw = rsh_cart_2(zyx) # torch.Size([100, 100, 100, 16])
+        self.register_buffer('shbasis', shw.unsqueeze(0).permute(0, 4, 1, 2, 3).repeat(self.batch_size, 1, 1, 1, 1))
 
     def forward(self, figures):
         clarity = self.clarity_net(figures)
         density = self.density_net(clarity)
         shcodes = self.mixture_net(torch.cat([clarity, density], dim=1))
-        volumes = (shcodes.to(figures.device)*self.shweights).mean(dim=1, keepdim=True)
-        return volumes #, density, clarity
+        decomps = (shcodes.to(figures.device)*self.shbasis)
+        volumes = decomps.mean(dim=1, keepdim=True)
+        return volumes, decomps #, density, clarity
     
     # def forward_opacity(self, volume):
     #     return self.clarity_net(volume)
@@ -235,10 +236,10 @@ class NeRVLightningModule(LightningModule):
 
         # XR pathway
         src_figure_xr_hidden = image2d
-        est_volume_xr = self.forward(src_figure_xr_hidden)
+        est_volume_xr, est_decomp_xr = self.forward(src_figure_xr_hidden)
         est_opaque_xr = torch.ones_like(est_volume_xr)
         est_figure_xr_locked = self.visualizer.forward(
-            image3d=est_volume_xr, 
+            image3d=est_decomp_xr, 
             opacity=est_opaque_xr, 
             cameras=camera_locked
         )
@@ -256,15 +257,15 @@ class NeRVLightningModule(LightningModule):
             opacity=src_opaque_ct, 
             cameras=camera_random
         )
-        est_volume_ct = self.forward(est_figure_ct_locked) # How to augment here?
+        est_volume_ct, est_decomp_ct = self.forward(est_figure_ct_locked) # How to augment here?
         est_opaque_ct = torch.ones_like(est_volume_ct)
         rec_figure_ct_locked = self.visualizer.forward(
-            image3d=est_volume_ct, 
+            image3d=est_decomp_ct, 
             opacity=est_opaque_ct, 
             cameras=camera_locked
         )
         rec_figure_ct_random = self.visualizer.forward(
-            image3d=est_volume_ct, 
+            image3d=est_decomp_ct, 
             opacity=est_opaque_ct, 
             cameras=camera_random
         )
