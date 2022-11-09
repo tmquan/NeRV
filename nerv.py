@@ -117,7 +117,7 @@ class NeRVLightningModule(LightningModule):
         raysampler = NDCMultinomialRaysampler(  # NDCGridRaysampler(
             image_width=self.shape,
             image_height=self.shape,
-            n_pts_per_ray=320,  # self.shape,
+            n_pts_per_ray=400,  # self.shape,
             min_depth=2.0,
             max_depth=6.0,
         )
@@ -236,13 +236,13 @@ class NeRVLightningModule(LightningModule):
 
         # XR pathway
         src_figure_xr_hidden = image2d
-        est_volume_xr, est_decomp_xr = self.forward(src_figure_xr_hidden)
-        est_opaque_xr = torch.ones_like(est_volume_xr)
-        est_figure_xr_locked = self.visualizer.forward(
-            image3d=est_decomp_xr, 
-            opacity=est_opaque_xr, 
-            cameras=camera_locked
-        )
+        # est_volume_xr, est_decomp_xr = self.forward(src_figure_xr_hidden)
+        # est_opaque_xr = torch.ones_like(est_volume_xr)
+        # est_figure_xr_locked = self.visualizer.forward(
+        #     image3d=est_decomp_xr, 
+        #     opacity=est_opaque_xr, 
+        #     cameras=camera_locked
+        # )
 
         # CT pathway
         src_volume_ct = image3d
@@ -257,8 +257,22 @@ class NeRVLightningModule(LightningModule):
             opacity=src_opaque_ct, 
             cameras=camera_random
         )
-        est_volume_ct, est_decomp_ct = self.forward(est_figure_ct_locked) # How to augment here?
+        # est_volume_ct, est_decomp_ct = self.forward(est_figure_ct_locked) # How to augment here?
+        src_figure_dx_locked = torch.cat([src_figure_xr_hidden, est_figure_ct_locked]) # Concat
+        est_volume_dx, est_decomp_dx = self.forward(src_figure_dx_locked) # Forward
+        est_volume_xr, est_volume_ct = est_volume_dx.split(self.batch_size) # Split
+        est_decomp_xr, est_decomp_ct = est_decomp_dx.split(self.batch_size) # Split
+
+        # XR again
+        est_opaque_xr = torch.ones_like(est_volume_xr)
+        est_figure_xr_locked = self.visualizer.forward(
+            image3d=est_decomp_xr, 
+            opacity=est_opaque_xr, 
+            cameras=camera_locked
+        )
+
         est_opaque_ct = torch.ones_like(est_volume_ct)
+        
         rec_figure_ct_locked = self.visualizer.forward(
             image3d=est_decomp_ct, 
             opacity=est_opaque_ct, 
