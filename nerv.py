@@ -12,7 +12,7 @@ torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 import kornia 
-
+from rsh import rsh_cart_3
 from renderer import *
 from raysampler import *
 from raymarcher import *
@@ -22,6 +22,7 @@ from pytorch3d.renderer import (
     VolumeRenderer,
     NDCMultinomialRaysampler, 
 )
+
 from pytorch3d.renderer.cameras import (
     CamerasBase,
     FoVPerspectiveCameras, 
@@ -181,7 +182,7 @@ class NeRVLightningModule(LightningModule):
             Unet(
                 spatial_dims=3,
                 in_channels=2,
-                out_channels=1,
+                out_channels=16,
                 channels=(64, 128, 256, 512, 1024),
                 strides=(2, 2, 2, 2),
                 num_res_units=2,
@@ -193,37 +194,22 @@ class NeRVLightningModule(LightningModule):
             ),
             # nn.Tanh()
         )
-
-        # self.opacity_net = nn.Sequential(
-        #     Unet(
-        #         spatial_dims=3,
-        #         in_channels=1,
-        #         out_channels=1,
-        #         channels=(64, 128, 256, 512, 1024),
-        #         strides=(2, 2, 2, 2),
-        #         num_res_units=2,
-        #         kernel_size=3,
-        #         up_kernel_size=3,
-        #         act=("LeakyReLU", {"inplace": True}),
-        #         norm=Norm.BATCH,
-        #         # dropout=0.5,
-        #     ),
-        #     # nn.Tanh()
-        # )
+        
+        # Generate grid
+        zs = torch.linspace(-1, 1, steps=self.shape)
+        ys = torch.linspace(-1, 1, steps=self.shape)
+        xs = torch.linspace(-1, 1, steps=self.shape)
+        z, y, x = torch.meshgrid(zs, ys, xs)
+        zyx = torch.stack([z, y, x], dim=-1) # torch.Size([100, 100, 100, 3])
+        shw = rsh_cart_3(zyx) # torch.Size([100, 100, 100, 16])
+        self.register_buffer('shweights', shw.unsqueeze(0).permute(0, 4, 1, 2, 3).repeat(self.batch_size, 1, 1, 1, 1))
 
     def forward(self, figures):
-        if self.filter=='sobel':
-            filtered = kornia.filters.sobel(figures)
-        elif self.filter=='laplacian':
-            filtered = kornia.filters.laplacian(figures)
-        elif self.filter=='canny':
-            filtered = kornia.filters.canny(figures)            
-        else:
-            filtered = figures
         clarity = self.clarity_net(figures)
         density = self.density_net(clarity)
-        volumes = self.mixture_net(torch.cat([clarity, density], dim=1))
-        return volumes, density, clarity
+        shcodes = self.mixture_net(torch.cat([clarity, density], dim=1))
+        volumes = (shcodes.to(figures.device)*self.shweights).mean(dim=1, keepdim=True)
+        return volumes #, density, clarity
     
     # def forward_opacity(self, volume):
     #     return self.clarity_net(volume)
@@ -232,15 +218,6 @@ class NeRVLightningModule(LightningModule):
         _device = batch["image3d"].device
         image3d = batch["image3d"]
         image2d = batch["image2d"]
-        
-        # if stage=='train':
-        #      # Calculate interpolation
-        #     factor = torch.rand(self.batch_size, 1, 1, 1, 1, device=_device)
-        #     volume = image3d
-        #     noises = torch.rand_like(volume)
-        #     factor = factor.expand_as(volume)
-        #     if batch_idx%2==1:
-        #         image3d = factor * volume + (1 - factor) * noises
 
         # Construct the locked camera
         dist_locked = 4.0 * torch.ones(self.batch_size, device=_device)
@@ -258,7 +235,7 @@ class NeRVLightningModule(LightningModule):
 
         # XR pathway
         src_figure_xr_hidden = image2d
-        est_volume_xr, _, _  = self.forward(src_figure_xr_hidden)
+        est_volume_xr = self.forward(src_figure_xr_hidden)
         est_opaque_xr = torch.ones_like(est_volume_xr)
         est_figure_xr_locked = self.visualizer.forward(
             image3d=est_volume_xr, 
@@ -279,8 +256,7 @@ class NeRVLightningModule(LightningModule):
             opacity=src_opaque_ct, 
             cameras=camera_random
         )
-        est_volume_ct, est_densty_ct, est_clarty_ct \
-            = self.forward(est_figure_ct_locked) # How to augment here?
+        est_volume_ct = self.forward(est_figure_ct_locked) # How to augment here?
         est_opaque_ct = torch.ones_like(est_volume_ct)
         rec_figure_ct_locked = self.visualizer.forward(
             image3d=est_volume_ct, 
@@ -294,13 +270,12 @@ class NeRVLightningModule(LightningModule):
         )
 
         # Compute the loss
-        im3d_loss = self.loss_smoothl1(src_volume_ct, est_volume_ct) \
-                  + self.loss_smoothl1(src_volume_ct, est_densty_ct) \
-                  + self.loss_smoothl1(src_volume_ct, est_clarty_ct) 
+        im3d_loss = self.loss_smoothl1(src_volume_ct, est_volume_ct) 
                   
         im2d_loss = self.loss_smoothl1(est_figure_ct_locked, rec_figure_ct_locked) \
                   + self.loss_smoothl1(est_figure_ct_random, rec_figure_ct_random) \
                   + self.loss_smoothl1(src_figure_xr_hidden, est_figure_xr_locked)
+
         loss = 3 * im3d_loss + im2d_loss 
 
         # if self.lpips:
