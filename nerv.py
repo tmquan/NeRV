@@ -140,7 +140,7 @@ class NeRVLightningModule(LightningModule):
         # )
         # self.numsteps = 60
 
-        self.loss_smoothl1 = nn.SmoothL1Loss(reduction="mean", beta=0.01)
+        self.loss_smoothl1 = nn.SmoothL1Loss(reduction="mean", beta=0.02)
         # self.loss_lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg')
 
         self.clarity_net = nn.Sequential(
@@ -201,7 +201,7 @@ class NeRVLightningModule(LightningModule):
         xs = torch.linspace(-1, 1, steps=self.shape)
         z, y, x = torch.meshgrid(zs, ys, xs)
         zyx = torch.stack([z, y, x], dim=-1) # torch.Size([100, 100, 100, 3])
-        shw = rsh_cart_2(zyx) # torch.Size([100, 100, 100, 16])
+        shw = rsh_cart_2(zyx) # torch.Size([100, 100, 100, 9 or 16])
         self.register_buffer('shbasis', shw.unsqueeze(0).permute(0, 4, 1, 2, 3).repeat(self.batch_size, 1, 1, 1, 1))
 
     def forward(self, figures):
@@ -210,7 +210,7 @@ class NeRVLightningModule(LightningModule):
         shcodes = self.mixture_net(torch.cat([clarity, density], dim=1))
         decomps = (shcodes.to(figures.device)*self.shbasis)
         volumes = decomps.mean(dim=1, keepdim=True)
-        return volumes, decomps #, density, clarity
+        return volumes #, decomps #, density, clarity
     
     # def forward_opacity(self, volume):
     #     return self.clarity_net(volume)
@@ -219,6 +219,14 @@ class NeRVLightningModule(LightningModule):
         _device = batch["image3d"].device
         image3d = batch["image3d"]
         image2d = batch["image2d"]
+
+        if stage=='train':
+            if (batch_idx % 2) == 1:
+                masked = image3d[image3d>0]
+                noises = torch.rand_like(image3d) * masked 
+                alpha_ = torch.rand(self.batch_size, 1, 1, 1, 1, device=_device)
+                alpha_ = alpha_.expand_as(image3d)
+                image3d = alpha_ * image3d + (1 - alpha_) * noises
 
         # Construct the locked camera
         dist_locked = 4.0 * torch.ones(self.batch_size, device=_device)
@@ -236,13 +244,13 @@ class NeRVLightningModule(LightningModule):
 
         # XR pathway
         src_figure_xr_hidden = image2d
-        # est_volume_xr, est_decomp_xr = self.forward(src_figure_xr_hidden)
-        # est_opaque_xr = torch.ones_like(est_volume_xr)
-        # est_figure_xr_locked = self.visualizer.forward(
-        #     image3d=est_decomp_xr, 
-        #     opacity=est_opaque_xr, 
-        #     cameras=camera_locked
-        # )
+        est_volume_xr = self.forward(src_figure_xr_hidden)
+        est_opaque_xr = torch.ones_like(est_volume_xr)
+        est_figure_xr_locked = self.visualizer.forward(
+            image3d=est_volume_xr, 
+            opacity=est_opaque_xr, 
+            cameras=camera_locked
+        )
 
         # CT pathway
         src_volume_ct = image3d
@@ -257,29 +265,20 @@ class NeRVLightningModule(LightningModule):
             opacity=src_opaque_ct, 
             cameras=camera_random
         )
-        # est_volume_ct, est_decomp_ct = self.forward(est_figure_ct_locked) # How to augment here?
-        src_figure_dx_locked = torch.cat([src_figure_xr_hidden, est_figure_ct_locked]) # Concat
-        est_volume_dx, est_decomp_dx = self.forward(src_figure_dx_locked) # Forward
-        est_volume_xr, est_volume_ct = est_volume_dx.split(self.batch_size) # Split
-        est_decomp_xr, est_decomp_ct = est_decomp_dx.split(self.batch_size) # Split
-
-        # XR again
-        est_opaque_xr = torch.ones_like(est_volume_xr)
-        est_figure_xr_locked = self.visualizer.forward(
-            image3d=est_decomp_xr, 
-            opacity=est_opaque_xr, 
-            cameras=camera_locked
-        )
-
+        est_volume_ct = self.forward(est_figure_ct_locked) # How to augment here?
+        # src_figure_dx_locked = torch.cat([src_figure_xr_hidden, est_figure_ct_locked]) # Concat
+        # est_volume_dx, est_decomp_dx = self.forward(src_figure_dx_locked) # Forward
+        # est_volume_xr, est_volume_ct = est_volume_dx.split(self.batch_size) # Split
+        # est_decomp_xr, est_decomp_ct = est_decomp_dx.split(self.batch_size) # Split
         est_opaque_ct = torch.ones_like(est_volume_ct)
         
         rec_figure_ct_locked = self.visualizer.forward(
-            image3d=est_decomp_ct, 
+            image3d=est_volume_ct, 
             opacity=est_opaque_ct, 
             cameras=camera_locked
         )
         rec_figure_ct_random = self.visualizer.forward(
-            image3d=est_decomp_ct, 
+            image3d=est_volume_ct, 
             opacity=est_opaque_ct, 
             cameras=camera_random
         )
