@@ -117,7 +117,7 @@ class NeRVLightningModule(LightningModule):
         raysampler = NDCMultinomialRaysampler(  # NDCGridRaysampler(
             image_width=self.shape,
             image_height=self.shape,
-            n_pts_per_ray=400,  # self.shape,
+            n_pts_per_ray=320,  # self.shape,
             min_depth=2.0,
             max_depth=6.0,
         )
