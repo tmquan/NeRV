@@ -222,8 +222,8 @@ class NeRVLightningModule(LightningModule):
 
         if stage=='train':
             if (batch_idx % 2) == 1:
-                masked = image3d[image3d>0]
-                noises = torch.rand_like(image3d) * masked 
+                masked = image3d>0
+                noises = torch.rand_like(image3d) * masked.to(image3d.dtype)
                 alpha_ = torch.rand(self.batch_size, 1, 1, 1, 1, device=_device)
                 alpha_ = alpha_.expand_as(image3d)
                 image3d = alpha_ * image3d + (1 - alpha_) * noises
