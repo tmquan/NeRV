@@ -187,7 +187,7 @@ class UnpairedDataModule(LightningDataModule):
         self.train_loader = DataLoader(
             self.train_datasets, 
             batch_size=self.batch_size, 
-            num_workers=32, 
+            num_workers=48, 
             collate_fn=list_data_collate,
             shuffle=True,
         )
@@ -249,7 +249,7 @@ class UnpairedDataModule(LightningDataModule):
         self.val_loader = DataLoader(
             self.val_datasets, 
             batch_size=self.batch_size, 
-            num_workers=8, 
+            num_workers=16, 
             collate_fn=list_data_collate,
             shuffle=True,
         )
