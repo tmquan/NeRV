@@ -166,12 +166,12 @@ class NeRVLightningModule(LightningModule):
                 
         else:
             if self.img:  
-                est_elev_random, est_azim_random = src_azim_random, src_elev_random 
-                est_elev_locked, est_azim_locked = src_azim_locked, src_elev_locked 
+                est_elev_random, est_azim_random = src_elev_random, src_azim_random 
+                est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
                 est_elev_hidden, est_azim_hidden = torch.zeros(self.batch_size, device=_device), torch.zeros(self.batch_size, device=_device)
             else:
-                est_elev_random, est_azim_random = src_azim_random, src_elev_random 
-                est_elev_locked, est_azim_locked = src_azim_locked, src_elev_locked 
+                est_elev_random, est_azim_random = src_elev_random, src_azim_random 
+                est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked
                 
         if self.sup:
             camera_random = make_cameras(src_dist_random, src_elev_random, src_azim_random)
