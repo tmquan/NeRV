@@ -3,7 +3,8 @@ import warnings
 warnings.filterwarnings("ignore")
 import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-resource.setrlimit(resource.RLIMIT_NOFILE, (8192, rlimit[1]))
+print(rlimit)
+resource.setrlimit(resource.RLIMIT_NOFILE, (65536, rlimit[1]))
 
 import torch
 import torch.nn as nn
@@ -117,14 +118,14 @@ class NeRVLightningModule(LightningModule):
         image2d = batch["image2d"]
             
         # Construct the random cameras, -1 and 1 are the same point in azimuths
+        src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
         src_elev_random = torch.distributions.uniform.Uniform(-1.0, 1.0).sample([self.batch_size]).to(_device) #[-1 1]
         src_azim_random = torch.rand_like(src_elev_random) * 2 - 1 # [0 1) to [-1 1)
-        src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
         camera_random = make_cameras(src_dist_random, src_elev_random, src_azim_random)
         
+        src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
         src_elev_locked = torch.distributions.uniform.Uniform(-1.0, 1.0).sample([self.batch_size]).to(_device) #[-1 1]
         src_azim_locked = torch.rand_like(src_elev_locked) * 2 - 1 # [0 1) to [-1 1)
-        src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
         camera_locked = make_cameras(src_dist_locked, src_elev_locked, src_azim_locked)
 
         est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
