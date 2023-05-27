@@ -21,17 +21,37 @@ from lightning.pytorch.callbacks import StochasticWeightAveraging
 from lightning.pytorch.loggers import TensorBoardLogger
 from argparse import ArgumentParser
 
-from pytorch3d.renderer.cameras import (
-    FoVPerspectiveCameras, 
-    look_at_rotation,
-    look_at_view_transform, 
-    camera_position_from_spherical_angles
-)
-
 from datamodule import UnpairedDataModule
 from dvr.renderer import DirectVolumeFrontToBackRenderer
-from nerv.renderer import NeRVFrontToBackInverseRenderer, NeRVFrontToBackFrustumFeaturer
-from nerv.renderer import make_cameras_dea, make_cameras_RT, inverse_look_at_view_transform
+from nerv.renderer import NeRVFrontToBackInverseRenderer, NeRVFrontToBackFrustumFeaturer, make_cameras_dea 
+
+
+class nn_ElevationAzimuthLoss(nn.Module):
+    def __init__(self):
+        super(nn_ElevationAzimuthLoss, self).__init__()
+
+    def forward(self, output, elev_target, azim_target):
+        # Split output into elevation and azimuth outputs
+        elev_output, azim_output = torch.split(output, [180, 360], dim=1)
+        # elev_target, azim_target = torch.split(target, [1, 1], dim=1)
+
+        # Convert target probabilities to classes for elevation
+        elev_target = ((elev_target * 90.0) + 90.0).long().view(-1)
+
+        # Convert target probabilities to classes for azimuth
+        azim_target = ((azim_target * 180.0) + 180.0).long().view(-1)
+        # print(elev_output.shape, elev_target.shape)
+        # Compute elevation loss
+        elev_loss = nn.CrossEntropyLoss()(elev_output, elev_target)
+
+        # Compute azimuth loss
+        azim_loss = nn.CrossEntropyLoss()(azim_output, azim_target)
+
+        # Sum the losses
+        total_loss = elev_loss + azim_loss
+
+        return total_loss
+        
 
 class NeRVLightningModule(LightningModule):
     def __init__(self, hparams, **kwargs):
@@ -95,7 +115,7 @@ class NeRVLightningModule(LightningModule):
         if self.cam:
             self.cam_settings = NeRVFrontToBackFrustumFeaturer(
                 in_channels=1, 
-                out_channels=12, 
+                out_channels=540, 
                 backbone=self.backbone,
             )
             torch.nn.init.trunc_normal_(self.cam_settings.model._fc.weight.data, mean=0.0, std=0.05, a=-0.05, b=0.05)
@@ -103,16 +123,20 @@ class NeRVLightningModule(LightningModule):
 
         self.train_step_outputs = []
         self.validation_step_outputs = []
-        self.loss = nn.L1Loss(reduction="mean")
+        self.l1loss = nn.L1Loss(reduction="mean")
+        self.ealoss = nn_ElevationAzimuthLoss()
     
     def forward_screen(self, image3d, cameras, is_training=True):   
-        return self.fwd_renderer(image3d, cameras) 
+        with torch.set_grad_enabled(True and is_training):
+            return self.fwd_renderer(image3d, cameras) 
 
     def forward_volume(self, image2d, elev, azim, n_views=[2, 1], is_training=True): 
-        return self.inv_renderer(image2d * 2.0 - 1.0, elev.squeeze(1), azim.squeeze(1), n_views) #* 0.5 + 0.5
+        with torch.set_grad_enabled(self.vol and is_training):     
+            return self.inv_renderer(image2d * 2.0 - 1.0, elev.squeeze(1), azim.squeeze(1), n_views) #)* 0.5 + 0.5
 
     def forward_camera(self, image2d, is_training=True):
-        return self.cam_settings(image2d * 2.0 - 1.0)
+        with torch.set_grad_enabled(self.cam and is_training):    
+            return self.cam_settings(image2d * 2.0 - 1.0) 
 
     def forward_critic(self, image2d):
         return self.critic_model(image2d * 2.0 - 1.0)
@@ -124,17 +148,15 @@ class NeRVLightningModule(LightningModule):
             
         # Construct the random cameras, -1 and 1 are the same point in azimuths
         src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
-        src_elev_random = torch.distributions.uniform.Uniform(-0.5, 0.5).sample([self.batch_size]).to(_device) 
-        src_azim_random = torch.distributions.uniform.Uniform(-1.0, 0.5).sample([self.batch_size]).to(_device) 
+        src_elev_random = torch.distributions.uniform.Uniform(-0.5, 0.5).sample([self.batch_size]).to(_device) #[-1 1]
+        src_azim_random = torch.rand_like(src_elev_random) * 2 - 1 # [0 1) to [-1 1)
         camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
-        src_R_random, src_T_random = camera_random.R, camera_random.T 
         
         src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
-        src_elev_locked = torch.distributions.uniform.Uniform(-0.5, 0.5).sample([self.batch_size]).to(_device) 
-        src_azim_locked = torch.distributions.uniform.Uniform(-1.0, 0.5).sample([self.batch_size]).to(_device) 
+        src_elev_locked = torch.distributions.uniform.Uniform(-0.5, 0.5).sample([self.batch_size]).to(_device) #[-1 1]
+        src_azim_locked = torch.rand_like(src_elev_locked) * 2 - 1 # [0 1) to [-1 1)
         camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
-        src_R_locked, src_T_locked = camera_locked.R, camera_locked.T 
-        
+
         est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
         est_figure_ct_locked = self.forward_screen(image3d=image3d, cameras=camera_locked)
         
@@ -159,10 +181,16 @@ class NeRVLightningModule(LightningModule):
                 # est_elev_random, est_azim_random = torch.split(est_feat_random, 1, dim=1)
                 # est_elev_locked, est_azim_locked = torch.split(est_feat_locked, 1, dim=1)
                 # est_elev_hidden, est_azim_hidden = torch.split(est_feat_hidden, 1, dim=1)
-                est_R_random, est_T_random = torch.split(est_feat_random, 9, dim=1)
-                est_R_locked, est_T_locked = torch.split(est_feat_locked, 9, dim=1)
-                est_R_hidden, est_T_hidden = torch.split(est_feat_hidden, 9, dim=1)
+                est_elev_random, est_azim_random = torch.split(est_feat_random, [180, 360], dim=1)
+                est_elev_locked, est_azim_locked = torch.split(est_feat_locked, [180, 360], dim=1)
+                est_elev_hidden, est_azim_hidden = torch.split(est_feat_hidden, [180, 360], dim=1)
                 
+                est_elev_random = torch.argmax(est_elev_random, dim=1) / 90.0 - 1 
+                est_azim_random = torch.argmax(est_azim_random, dim=1) / 180. - 1
+                est_elev_locked = torch.argmax(est_elev_locked, dim=1) / 90.0 - 1 
+                est_azim_locked = torch.argmax(est_azim_locked, dim=1) / 180. - 1
+                est_elev_hidden = torch.argmax(est_elev_hidden, dim=1) / 90.0 - 1 
+                est_azim_hidden = torch.argmax(est_azim_hidden, dim=1) / 180. - 1
             else:
                 # Reconstruct the cameras
                 est_feat_random, \
@@ -174,61 +202,34 @@ class NeRVLightningModule(LightningModule):
 
                 # est_elev_random, est_azim_random = torch.split(est_feat_random, 1, dim=1)
                 # est_elev_locked, est_azim_locked = torch.split(est_feat_locked, 1, dim=1)
-                est_R_random, est_T_random = torch.split(est_feat_random, 9, dim=1)
-                est_R_locked, est_T_locked = torch.split(est_feat_locked, 9, dim=1)
+                est_elev_random, est_azim_random = torch.split(est_feat_random, [180, 360], dim=1)
+                est_elev_locked, est_azim_locked = torch.split(est_feat_locked, [180, 360], dim=1)
+                
+                est_elev_random = torch.argmax(est_elev_random, dim=1) / 90.0 - 1 
+                est_azim_random = torch.argmax(est_azim_random, dim=1) / 180. - 1
+                est_elev_locked = torch.argmax(est_elev_locked, dim=1) / 90.0 - 1 
+                est_azim_locked = torch.argmax(est_azim_locked, dim=1) / 180. - 1
                 
         else:
             if self.img:  
-                # est_elev_random, est_azim_random = src_elev_random, src_azim_random 
-                # est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
-                # est_elev_hidden, est_azim_hidden = torch.zeros(self.batch_size, device=_device), torch.zeros(self.batch_size, device=_device)
-                est_R_random, est_T_random = look_at_view_transform(
-                    dist=src_dist_random.float(), 
-                    elev=src_elev_random.float() * 90, 
-                    azim=src_azim_random.float() * 180
-                )
-                est_R_locked, est_T_locked = look_at_view_transform(
-                    dist=src_dist_locked.float(), 
-                    elev=src_elev_locked.float() * 90, 
-                    azim=src_azim_locked.float() * 180
-                )
-                est_R_hidden, est_T_hidden = look_at_view_transform(
-                    dist=est_dist_hidden.float(), 
-                    elev=torch.zeros(self.batch_size, device=_device).float() * 90, 
-                    azim=torch.zeros(self.batch_size, device=_device).float() * 180
-                )
-                
+                est_elev_random, est_azim_random = src_elev_random, src_azim_random 
+                est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
+                est_elev_hidden, est_azim_hidden = torch.zeros(self.batch_size, device=_device), torch.zeros(self.batch_size, device=_device)
             else:
-                # est_elev_random, est_azim_random = src_elev_random, src_azim_random 
-                # est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked
-                est_R_random, est_T_random = look_at_view_transform(
-                    dist=src_dist_random.float(), 
-                    elev=src_elev_random.float() * 90, 
-                    azim=src_azim_random.float() * 180
-                )
-                est_R_locked, est_T_locked = look_at_view_transform(
-                    dist=src_dist_locked.float(), 
-                    elev=src_elev_locked.float() * 90, 
-                    azim=src_azim_locked.float() * 180
-                )
+                est_elev_random, est_azim_random = src_elev_random, src_azim_random 
+                est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked
                 
         if self.sup:
-            # camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
-            # camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
             camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
             camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
+            if self.img:
+                camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
         else:
-            # camera_random = make_cameras_dea(est_dist_random, est_elev_random, est_azim_random)
-            # camera_locked = make_cameras_dea(est_dist_locked, est_elev_locked, est_azim_locked)
-            camera_random = make_cameras_RT(est_R_random, est_T_random)
-            camera_locked = make_cameras_RT(est_R_locked, est_T_locked)
-            est_dist_random, est_elev_random, est_azim_random = inverse_look_at_view_transform(est_R_random, est_T_random)
-            est_dist_locked, est_elev_locked, est_azim_locked = inverse_look_at_view_transform(est_R_locked, est_T_locked)
-            
-        if self.img:
-            # camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
-            camera_hidden = make_cameras_RT(est_R_hidden, est_T_hidden)
-            est_dist_hidden, est_elev_hidden, est_azim_hidden = inverse_look_at_view_transform(est_R_hidden, est_T_hidden)
+            camera_random = make_cameras_dea(est_dist_random, est_elev_random, est_azim_random)
+            camera_locked = make_cameras_dea(est_dist_locked, est_elev_locked, est_azim_locked)
+            if self.img:
+                camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
+
     
         cam_view = [self.batch_size, 1]     
         if self.img:
@@ -269,15 +270,15 @@ class NeRVLightningModule(LightningModule):
             est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
 
         # Compute the loss
-        im2d_loss_ct_random = self.loss(est_figure_ct_random, rec_figure_ct_random) 
-        im2d_loss_ct_locked = self.loss(est_figure_ct_locked, rec_figure_ct_locked) 
+        im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random) 
+        im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked) 
         
-        im3d_loss_ct_random = self.loss(image3d, est_volume_ct_random) #+ self.loss(image3d, mid_volume_ct_random) 
-        im3d_loss_ct_locked = self.loss(image3d, est_volume_ct_locked) #+ self.loss(image3d, mid_volume_ct_locked) 
+        im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) #+ self.l1loss(image3d, mid_volume_ct_random) 
+        im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) #+ self.l1loss(image3d, mid_volume_ct_locked) 
 
         im2d_loss_ct = im2d_loss_ct_random + im2d_loss_ct_locked    
         if self.img: 
-            im2d_loss_xr_hidden = self.loss(src_figure_xr_hidden, est_figure_xr_hidden) 
+            im2d_loss_xr_hidden = self.l1loss(src_figure_xr_hidden, est_figure_xr_hidden) 
             im2d_loss_xr = im2d_loss_xr_hidden 
             im2d_loss = im2d_loss_ct + im2d_loss_xr
         else:
@@ -292,17 +293,12 @@ class NeRVLightningModule(LightningModule):
         p_loss = self.gamma*im2d_loss + self.alpha*im3d_loss 
         
         if self.cam:
-            # view_loss_ct_random = self.loss(torch.cat([src_elev_random, src_azim_random]), 
-            #                                 torch.cat([est_elev_random, est_azim_random]))
-            # view_loss_ct_locked = self.loss(torch.cat([src_elev_locked, src_azim_locked]), 
-            #                                 torch.cat([est_elev_locked, est_azim_locked]))
-            
-            # print(src_R_random.shape, src_T_random.shape)
-            # print(src_R_random.device, est_R_random.device)
-            view_loss_ct_random = self.loss(torch.cat([src_R_random.reshape(-1, 9), src_T_random], dim=-1), 
-                                            torch.cat([est_R_random.reshape(-1, 9), est_T_random], dim=-1))
-            view_loss_ct_locked = self.loss(torch.cat([src_R_locked.reshape(-1, 9), src_T_locked], dim=-1), 
-                                            torch.cat([est_R_locked.reshape(-1, 9), est_T_locked], dim=-1))
+            # view_loss_ct_random = self.l1loss(torch.cat([src_elev_random, src_azim_random]), 
+            #                                   torch.cat([est_elev_random, est_azim_random]))
+            # view_loss_ct_locked = self.l1loss(torch.cat([src_elev_locked, src_azim_locked]), 
+            #                                   torch.cat([est_elev_locked, est_azim_locked]))
+            view_loss_ct_random = self.ealoss(est_feat_random, src_elev_random.unsqueeze(-1), src_azim_random.unsqueeze(-1))
+            view_loss_ct_locked = self.ealoss(est_feat_locked, src_elev_locked.unsqueeze(-1), src_azim_locked.unsqueeze(-1))
             view_loss_ct = view_loss_ct_random + view_loss_ct_locked
 
             view_loss = view_loss_ct
