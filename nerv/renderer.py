@@ -1,9 +1,14 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from pytorch3d.renderer import NDCMultinomialRaysampler
-from pytorch3d.renderer.cameras import FoVPerspectiveCameras, look_at_view_transform
+from pytorch3d.renderer.cameras import (
+    FoVPerspectiveCameras, 
+    look_at_rotation,
+    look_at_view_transform, 
+)
 from diffusers import UNet2DModel
 from monai.networks.nets import Unet, EfficientNetBN
 from monai.networks.layers.factories import Norm
@@ -23,7 +28,52 @@ backbones = {
     "efficientnet-l2": (72, 104, 176, 480, 1376),
 }
 
-def make_cameras(dist: torch.Tensor, elev: torch.Tensor, azim: torch.Tensor):
+def inverse_look_at_view_transform(R, T, degrees=True):
+    """
+    This function calculates the distance (dist), elevation (elev),
+    and azimuth (azim) angles from the rotation matrix (R) and
+    translation vector (T) obtained from the 'look_at_view_transform' function.
+
+    Args:
+        R: Rotation matrix of shape (N, 3, 3).
+        T: Translation vector of shape (N, 3).
+        degrees: boolean flag to indicate if the elevation and azimuth
+            angles should be returned in degrees or radians.
+
+    Returns:
+        3-element tuple containing
+
+        - **dist**: distance of the camera from the object(s).
+        - **elev**: elevation angle between the vector from the object
+            to the camera and the horizontal plane y = 0 (xz-plane).
+        - **azim**: azimuth angle between the projected vector from the
+            object to the camera and a reference vector at (1, 0, 0) on
+            the reference plane (the horizontal plane).
+
+    """
+    R = R.view(-1, 3, 3)
+    T = T.view(-1, 3)
+    # Calculate the distance (dist) from the translation vector
+    dist = torch.norm(T, dim=1)
+
+    # Calculate the elevation (elev) angle
+    elev = torch.asin(-R[:, 1, 1])
+    # Calculate the azimuth (azim) angle
+    azim = torch.atan2(R[:, 0, 2], R[:, 2, 2])
+    # Normalize to -1 1
+    elev = elev / 90
+    azim = azim / 180
+    if degrees:
+        elev = elev * 180.0 / math.pi
+        azim = azim * 180.0 / math.pi
+
+    return dist, elev, azim
+
+def make_cameras_dea(
+    dist: torch.Tensor, 
+    elev: torch.Tensor, 
+    azim: torch.Tensor
+    ):
     assert dist.device == elev.device == azim.device
     _device = dist.device
     R, T = look_at_view_transform(
@@ -32,6 +82,17 @@ def make_cameras(dist: torch.Tensor, elev: torch.Tensor, azim: torch.Tensor):
         azim=azim.float() * 180
     )
     return FoVPerspectiveCameras(R=R, T=T, fov=16, znear=8.0, zfar=12.0).to(_device)
+
+def make_cameras_RT(
+    R: torch.Tensor, 
+    T: torch.Tensor
+    ):
+    R = R.view(-1, 3, 3)
+    T = T.view(-1, 3)
+    assert R.device == T.device
+    _device = R.device
+    return FoVPerspectiveCameras(R=R, T=T, fov=16, znear=8.0, zfar=12.0).to(_device)
+
 
 class NeRVFrontToBackFrustumFeaturer(nn.Module):
     def __init__(self, 
@@ -195,29 +256,55 @@ class NeRVFrontToBackInverseRenderer(nn.Module):
         B = figures.shape[0]
         assert B==sum(n_views) # batch must be equal to number of projections
 
-        # Process (resample) the clarity from ray views to ndc
-        dist = 10.0 * torch.ones(B, device=_device)
-        cameras = make_cameras(dist, elev, azim)
+        # # Split the clarity according to the n_views
+        # scenes = torch.split(clarity, split_size_or_sections=n_views, dim=0) # 31SHW = [21SHW, 11SHW]
+        # eleves = torch.split(elev, split_size_or_sections=n_views, dim=0)
+        # azimes = torch.split(azim, split_size_or_sections=n_views, dim=0)
         
-        # Split the clarity according to the n_views
-        scenes = torch.split(clarity, split_size_or_sections=n_views, dim=0) # 31SHW = [21SHW, 11SHW]
+        # interp = []
+        # z = torch.linspace(-1.5, 1.5, steps=self.vol_shape, device=_device)
+        # y = torch.linspace(-1.5, 1.5, steps=self.vol_shape, device=_device)
+        # x = torch.linspace(-1.5, 1.5, steps=self.vol_shape, device=_device)
+        # for scene_, elev_, azim_, n_view in zip(scenes, eleves, azimes, n_views):
+        #     coords = torch.stack(torch.meshgrid(x, y, z), dim=-1).view(-1, 3).unsqueeze(0).repeat(n_view, 1, 1) # 1 DHW 3 to n_view DHW 3
+        #     # Process (resample) the clarity from ray views to ndc
+        #     dist_ = 10.0 * torch.ones(n_view, device=_device)
+        #     camera_ = make_cameras_dea(dist_, elev_, azim_)
+            
+        #     points = camera_.transform_points_ndc(coords) # world to ndc, 1 DHW 3
+        #     values = F.grid_sample(
+        #         scene_,
+        #         points.view(-1, self.vol_shape, self.vol_shape, self.vol_shape, 3),
+        #         mode='bilinear', 
+        #         padding_mode='zeros', 
+        #         align_corners=False
+        #     )
+        #     values = values.mean(dim=0, keepdim=True)
+        #     interp.append(values)
         
-        interp = []
         z = torch.linspace(-1.5, 1.5, steps=self.vol_shape, device=_device)
         y = torch.linspace(-1.5, 1.5, steps=self.vol_shape, device=_device)
         x = torch.linspace(-1.5, 1.5, steps=self.vol_shape, device=_device)
+        coords = torch.stack(torch.meshgrid(x, y, z), dim=-1).view(-1, 3).unsqueeze(0).repeat(B, 1, 1) # 1 DHW 3 to B DHW 3
+        # Process (resample) the clarity from ray views to ndc
+        dist = 10.0 * torch.ones(B, device=_device)
+        cameras = make_cameras_dea(dist, elev, azim)
+        
+        points = cameras.transform_points_ndc(coords) # world to ndc, 1 DHW 3
+        values = F.grid_sample(
+            clarity,
+            points.view(-1, self.vol_shape, self.vol_shape, self.vol_shape, 3),
+            mode='bilinear', 
+            padding_mode='zeros', 
+            align_corners=False
+        )
+        
+        scenes = torch.split(values, split_size_or_sections=n_views, dim=0) # 31SHW = [21SHW, 11SHW]
+        interp = []
         for scene_, n_view in zip(scenes, n_views):
-            coords = torch.stack(torch.meshgrid(x, y, z), dim=-1).view(-1, 3).unsqueeze(0).repeat(n_view, 1, 1) # 1 DHW 3 to n_view DHW 3
-            points = cameras.transform_points_ndc(coords) # world to ndc, 1 DHW 3
-            values = F.grid_sample(
-                scene_,
-                points.view(-1, self.vol_shape, self.vol_shape, self.vol_shape, 3),
-                mode='bilinear', 
-                padding_mode='zeros', 
-                align_corners=False
-            )
-            values = values.mean(dim=0, keepdim=True)
-            interp.append(values)
+            value_ = scene_.mean(dim=0, keepdim=True)
+            interp.append(value_)
+            
         clarity = torch.cat(interp, dim=0)
 
         if self.pe > 0:
