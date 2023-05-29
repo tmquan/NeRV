@@ -25,34 +25,6 @@ from datamodule import UnpairedDataModule
 from dvr.renderer import DirectVolumeFrontToBackRenderer
 from nerv.renderer import NeRVFrontToBackInverseRenderer, NeRVFrontToBackFrustumFeaturer, make_cameras_dea 
 
-
-class nn_ElevationAzimuthLoss(nn.Module):
-    def __init__(self):
-        super(nn_ElevationAzimuthLoss, self).__init__()
-
-    def forward(self, output, elev_target, azim_target):
-        # Split output into elevation and azimuth outputs
-        elev_output, azim_output = torch.split(output, [180, 360], dim=1)
-        # elev_target, azim_target = torch.split(target, [1, 1], dim=1)
-
-        # Convert target probabilities to classes for elevation
-        elev_target = ((elev_target * 90.0) + 90.0).long().view(-1)
-
-        # Convert target probabilities to classes for azimuth
-        azim_target = ((azim_target * 180.0) + 180.0).long().view(-1)
-        # print(elev_output.shape, elev_target.shape)
-        # Compute elevation loss
-        elev_loss = nn.CrossEntropyLoss()(elev_output, elev_target)
-
-        # Compute azimuth loss
-        azim_loss = nn.CrossEntropyLoss()(azim_output, azim_target)
-
-        # Sum the losses
-        total_loss = elev_loss + azim_loss
-
-        return total_loss
-        
-
 class NeRVLightningModule(LightningModule):
     def __init__(self, hparams, **kwargs):
         super().__init__()
@@ -115,7 +87,7 @@ class NeRVLightningModule(LightningModule):
         if self.cam:
             self.cam_settings = NeRVFrontToBackFrustumFeaturer(
                 in_channels=1, 
-                out_channels=540, 
+                out_channels=2, 
                 backbone=self.backbone,
             )
             torch.nn.init.trunc_normal_(self.cam_settings.model._fc.weight.data, mean=0.0, std=0.05, a=-0.05, b=0.05)
@@ -124,7 +96,6 @@ class NeRVLightningModule(LightningModule):
         self.train_step_outputs = []
         self.validation_step_outputs = []
         self.l1loss = nn.L1Loss(reduction="mean")
-        self.ealoss = nn_ElevationAzimuthLoss()
     
     def forward_screen(self, image3d, cameras, is_training=True):   
         with torch.set_grad_enabled(True and is_training):
@@ -178,19 +149,10 @@ class NeRVLightningModule(LightningModule):
                     ), self.batch_size
                 )
 
-                # est_elev_random, est_azim_random = torch.split(est_feat_random, 1, dim=1)
-                # est_elev_locked, est_azim_locked = torch.split(est_feat_locked, 1, dim=1)
-                # est_elev_hidden, est_azim_hidden = torch.split(est_feat_hidden, 1, dim=1)
-                est_elev_random, est_azim_random = torch.split(est_feat_random, [180, 360], dim=1)
-                est_elev_locked, est_azim_locked = torch.split(est_feat_locked, [180, 360], dim=1)
-                est_elev_hidden, est_azim_hidden = torch.split(est_feat_hidden, [180, 360], dim=1)
+                est_elev_random, est_azim_random = torch.split(est_feat_random, 1, dim=1)
+                est_elev_locked, est_azim_locked = torch.split(est_feat_locked, 1, dim=1)
+                est_elev_hidden, est_azim_hidden = torch.split(est_feat_hidden, 1, dim=1)
                 
-                est_elev_random = torch.argmax(est_elev_random, dim=1) / 90.0 - 1 
-                est_azim_random = torch.argmax(est_azim_random, dim=1) / 180. - 1
-                est_elev_locked = torch.argmax(est_elev_locked, dim=1) / 90.0 - 1 
-                est_azim_locked = torch.argmax(est_azim_locked, dim=1) / 180. - 1
-                est_elev_hidden = torch.argmax(est_elev_hidden, dim=1) / 90.0 - 1 
-                est_azim_hidden = torch.argmax(est_azim_hidden, dim=1) / 180. - 1
             else:
                 # Reconstruct the cameras
                 est_feat_random, \
@@ -200,15 +162,8 @@ class NeRVLightningModule(LightningModule):
                     ), self.batch_size
                 )
 
-                # est_elev_random, est_azim_random = torch.split(est_feat_random, 1, dim=1)
-                # est_elev_locked, est_azim_locked = torch.split(est_feat_locked, 1, dim=1)
-                est_elev_random, est_azim_random = torch.split(est_feat_random, [180, 360], dim=1)
-                est_elev_locked, est_azim_locked = torch.split(est_feat_locked, [180, 360], dim=1)
-                
-                est_elev_random = torch.argmax(est_elev_random, dim=1) / 90.0 - 1 
-                est_azim_random = torch.argmax(est_azim_random, dim=1) / 180. - 1
-                est_elev_locked = torch.argmax(est_elev_locked, dim=1) / 90.0 - 1 
-                est_azim_locked = torch.argmax(est_azim_locked, dim=1) / 180. - 1
+                est_elev_random, est_azim_random = torch.split(est_feat_random, 1, dim=1)
+                est_elev_locked, est_azim_locked = torch.split(est_feat_locked, 1, dim=1)
                 
         else:
             if self.img:  
@@ -293,12 +248,10 @@ class NeRVLightningModule(LightningModule):
         p_loss = self.gamma*im2d_loss + self.alpha*im3d_loss 
         
         if self.cam:
-            # view_loss_ct_random = self.l1loss(torch.cat([src_elev_random, src_azim_random]), 
-            #                                   torch.cat([est_elev_random, est_azim_random]))
-            # view_loss_ct_locked = self.l1loss(torch.cat([src_elev_locked, src_azim_locked]), 
-            #                                   torch.cat([est_elev_locked, est_azim_locked]))
-            view_loss_ct_random = self.ealoss(est_feat_random, src_elev_random.unsqueeze(-1), src_azim_random.unsqueeze(-1))
-            view_loss_ct_locked = self.ealoss(est_feat_locked, src_elev_locked.unsqueeze(-1), src_azim_locked.unsqueeze(-1))
+            view_loss_ct_random = self.l1loss(torch.cat([src_elev_random, src_azim_random]), 
+                                              torch.cat([est_elev_random, est_azim_random]))
+            view_loss_ct_locked = self.l1loss(torch.cat([src_elev_locked, src_azim_locked]), 
+                                              torch.cat([est_elev_locked, est_azim_locked]))
             view_loss_ct = view_loss_ct_random + view_loss_ct_locked
 
             view_loss = view_loss_ct
@@ -537,9 +490,9 @@ if __name__ == "__main__":
     ]
 
     train_image2d_folders = [
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/JSRT/processed/images/'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/ChinaSet/processed/images/'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Montgomery/processed/images/'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/JSRT/processed/images/'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/ChinaSet/processed/images/'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Montgomery/processed/images/'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/train/images/'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/test/images/'),
 
@@ -577,9 +530,9 @@ if __name__ == "__main__":
     ]
 
     val_image2d_folders = [
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/JSRT/processed/images/'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/ChinaSet/processed/images/'),
-        os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Montgomery/processed/images/'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/JSRT/processed/images/'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/ChinaSet/processed/images/'),
+        # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/Montgomery/processed/images/'),
         # os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/train/images/'),
         os.path.join(hparams.datadir, 'ChestXRLungSegmentation/VinDr/v1/processed/test/images/'),
         # os.path.join(hparams.datadir, 'SpineXRVertSegmentation/T62020/20200501/raw/images'),
