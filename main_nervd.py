@@ -158,13 +158,13 @@ class NeRVLightningModule(LightningModule):
         est_figure_xr_hidden = self.forward_screen(image3d=est_volume_xr_hidden, cameras=camera_hidden, is_training=(stage=='train'))
 
         # Perform Post activation like DVGO      
-        est_volume_ct_interp = est_volume_ct_interp.sum(dim=1, keepdim=True)
         est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
+        est_volume_ct_interp = est_volume_ct_interp.sum(dim=1, keepdim=True)
         est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
 
         # Compute the loss
         im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
-        im3d_loss_ct_interp = self.l1loss(noisy3d, est_volume_ct_interp) 
+        im3d_loss_ct_interp = self.l1loss(noise3d, est_volume_ct_interp) 
         
         im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random) 
         im2d_loss_ct_interp = self.l1loss(src_figure_ct_interp, est_figure_ct_interp) 
