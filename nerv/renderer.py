@@ -251,7 +251,7 @@ class NeRVFrontToBackInverseRenderer(nn.Module):
         
     def forward(self, figures, elev, azim, n_views=[2, 1]):
         clarity = self.clarity_net(
-            figures, elev*1800, azim*900)[0].view(-1, 1, self.n_pts_per_ray, self.img_shape, self.img_shape)
+            figures, elev, azim)[0].view(-1, 1, self.n_pts_per_ray, self.img_shape, self.img_shape)
         _device = figures.device
         B = figures.shape[0]
         assert B==sum(n_views) # batch must be equal to number of projections
