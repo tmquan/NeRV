@@ -94,12 +94,10 @@ class NeRVLightningModule(LightningModule):
         self.l1loss = nn.L1Loss(reduction="mean")
 
     def forward_screen(self, image3d, cameras, is_training=True):   
-        with torch.set_grad_enabled(True and is_training):
-            return self.fwd_renderer(image3d, cameras) 
+        return self.fwd_renderer(image3d, cameras) 
 
     def forward_volume(self, image2d, elev, azim, n_views=[2, 1], is_training=True): 
-        with torch.set_grad_enabled(self.vol and is_training):     
-            return self.inv_renderer(image2d * 2.0 - 1.0, elev.squeeze(1), azim.squeeze(1), n_views) 
+        return self.inv_renderer(image2d * 2.0 - 1.0, elev.squeeze(1), azim.squeeze(1), n_views) 
     
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str] = 'evaluation'):
         _device = batch["image3d"].device
@@ -147,8 +145,7 @@ class NeRVLightningModule(LightningModule):
                 azim=torch.cat([est_azim_random.view(cam_view), 
                                 est_azim_random.view(cam_view), 
                                 est_azim_hidden.view(cam_view)]) * 180,
-                n_views=[1, 1, 1],
-                is_training=(stage=='train')
+                n_views=[1, 1, 1]
             ), self.batch_size
         )  
         
