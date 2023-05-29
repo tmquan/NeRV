@@ -144,7 +144,7 @@ class NeRVLightningModule(LightningModule):
                                 timetotal.view(cam_view)]),
                 azim=torch.cat([est_azim_random.view(cam_view), 
                                 est_azim_random.view(cam_view), 
-                                est_azim_hidden.view(cam_view)]) * 180,
+                                est_azim_hidden.view(cam_view)]) * 90,
                 n_views=[1, 1, 1]
             ), self.batch_size
         )  
@@ -299,7 +299,7 @@ if __name__ == "__main__":
             swa_callback if not hparams.gan else None,
         ],
         accumulate_grad_batches=4 if not hparams.gan else 1,
-        strategy="ddp_find_unused_parameters_true", 
+        strategy="auto", #"ddp_find_unused_parameters_true", 
         precision=16 if hparams.amp else 32,
         # gradient_clip_val=0.01, 
         # gradient_clip_algorithm="value"
