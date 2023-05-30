@@ -111,9 +111,14 @@ class NeRVLightningModule(LightningModule):
         src_azim_random = torch.rand_like(src_elev_random) * 2 - 1 # [0 1) to [-1 1)
         camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
         est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
-        
         est_elev_random, est_azim_random = src_elev_random, src_azim_random 
-        est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
+        
+        src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
+        src_elev_locked = torch.zeros(self.batch_size, device=_device)
+        src_azim_locked = torch.rand_like(src_elev_locked) * 2 - 1 # [0 1) to [-1 1)
+        camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
+        est_figure_ct_locked = self.forward_screen(image3d=image3d, cameras=camera_locked)
+        est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
         
         # XR pathway
         src_figure_xr_hidden = image2d
@@ -122,68 +127,103 @@ class NeRVLightningModule(LightningModule):
         est_azim_hidden = torch.zeros(self.batch_size, device=_device)
         camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
         
-        cam_view = [self.batch_size, 1]     
         # Diffusion step goes here    
         noise3d = torch.randn_like(image3d) * 0.5 + 0.5
-        src_figure_ct_interp = self.forward_screen(image3d=noise3d, cameras=camera_random)
+        src_figure_dx_random = self.forward_screen(image3d=noise3d, cameras=camera_random)
+        src_figure_dx_locked = self.forward_screen(image3d=noise3d, cameras=camera_locked)
+        
+        randn3d = torch.randn_like(image3d) * 0.5 + 0.5
+        noise2d = self.forward_screen(image3d=randn3d, cameras=camera_hidden)
         
         # Sample a random timestep for each image
         timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (batchsz,), device=_device)
         timetotal = torch.Tensor([self.noise_scheduler.num_train_timesteps]).to(_device)
-        noisy3d = self.noise_scheduler.add_noise(image3d, noise3d, timesteps) 
-        est_figure_ct_interp = self.forward_screen(image3d=noisy3d, cameras=camera_random)
-        est_volume_ct_random, \
-        est_volume_ct_interp, \
-        est_volume_xr_hidden = torch.split(
-            self.forward_volume(
-                image2d=torch.cat([est_figure_ct_random, 
-                                   est_figure_ct_interp, 
-                                   src_figure_xr_hidden]),
-                elev=torch.cat([timetotal.view(cam_view), 
-                                timesteps.view(cam_view), 
-                                timetotal.view(cam_view)]),
-                azim=torch.cat([est_azim_random.view(cam_view), 
-                                est_azim_random.view(cam_view), 
-                                est_azim_hidden.view(cam_view)]) * 90,
-                n_views=[1, 1, 1]
-            ), self.batch_size
-        )  
         
+        noisy3d = self.noise_scheduler.add_noise(image3d, noise3d, timesteps) 
+        noisy2d = self.noise_scheduler.add_noise(image2d, noise2d, timesteps) 
+        
+        est_figure_dx_random = self.forward_screen(image3d=noisy3d, cameras=camera_random)
+        est_figure_dx_locked = self.forward_screen(image3d=noisy3d, cameras=camera_locked)
+        
+        cam_view = [self.batch_size, 1]     
+        with torch.set_grad_enabled(batch_idx%2==0  and stage=="train"):   
+            est_volume_ct_random, \
+            est_volume_ct_locked, \
+            est_volume_xr_hidden = torch.split(
+                self.forward_volume(
+                    image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
+                    elev=torch.cat([timetotal.view(cam_view), timetotal.view(cam_view), timetotal.view(cam_view)]),
+                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]) * 90,
+                    n_views=[2, 1]
+                ), self.batch_size
+            )  
+        with torch.set_grad_enabled(batch_idx%2!=0  and stage=="train"):   
+            est_volume_dx_random, \
+            est_volume_dx_locked, \
+            est_volume_xr_interp = torch.split(
+                self.forward_volume(
+                    image2d=torch.cat([est_figure_dx_random, est_figure_dx_locked, noisy2d]),
+                    elev=torch.cat([timesteps.view(cam_view), timesteps.view(cam_view), timesteps.view(cam_view)]),
+                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]) * 90,
+                    n_views=[2, 1]
+                ), self.batch_size
+            )          
         # # Predict the noise residual
         # noise3d_pred = model(noisy3d, timesteps, return_dict=False)[0]
                 
         # Reconstruct the appropriate XR
         rec_figure_ct_random = self.forward_screen(image3d=est_volume_ct_random, cameras=camera_random, is_training=(stage=='train'))
-        est_figure_ct_interp = self.forward_screen(image3d=est_volume_ct_interp, cameras=camera_random, is_training=(stage=='train'))
+        rec_figure_ct_locked = self.forward_screen(image3d=est_volume_ct_locked, cameras=camera_locked, is_training=(stage=='train'))
+        rec_figure_dx_random = self.forward_screen(image3d=est_volume_dx_random, cameras=camera_random, is_training=(stage=='train'))
+        rec_figure_dx_locked = self.forward_screen(image3d=est_volume_dx_locked, cameras=camera_locked, is_training=(stage=='train'))
         est_figure_xr_hidden = self.forward_screen(image3d=est_volume_xr_hidden, cameras=camera_hidden, is_training=(stage=='train'))
+        est_figure_xr_interp = self.forward_screen(image3d=est_volume_xr_interp, cameras=camera_hidden, is_training=(stage=='train'))
 
         # Perform Post activation like DVGO      
         est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
-        est_volume_ct_interp = est_volume_ct_interp.sum(dim=1, keepdim=True)
+        est_volume_ct_locked = est_volume_ct_locked.sum(dim=1, keepdim=True)
+        est_volume_dx_random = est_volume_dx_random.sum(dim=1, keepdim=True)
+        est_volume_dx_locked = est_volume_dx_locked.sum(dim=1, keepdim=True)
         est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
+        est_volume_xr_interp = est_volume_xr_interp.sum(dim=1, keepdim=True)
 
         # Compute the loss
-        im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
-        im3d_loss_ct_interp = self.l1loss(noise3d, est_volume_ct_interp) 
+        if batch_idx%2==0:
+            im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
+            im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) 
+            im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random)         
+            im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked)         
+            im2d_loss_xr_hidden = self.l1loss(image2d, est_figure_xr_hidden) 
+            
+            im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
+            im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden      
+        else:
+            im3d_loss_dx_random = self.l1loss(noise3d, est_volume_dx_random) 
+            im3d_loss_dx_locked = self.l1loss(noise3d, est_volume_dx_locked) 
+            im2d_loss_dx_random = self.l1loss(src_figure_dx_random, rec_figure_dx_random) #
+            im2d_loss_dx_locked = self.l1loss(src_figure_dx_locked, rec_figure_dx_locked) #
+            im2d_loss_xr_interp = self.l1loss(noise2d, est_figure_xr_interp) 
+            
+            im3d_loss = im3d_loss_dx_random + im3d_loss_dx_locked
+            im2d_loss = im2d_loss_dx_random + im2d_loss_dx_locked + im2d_loss_xr_interp  
         
-        im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random) 
-        im2d_loss_ct_interp = self.l1loss(src_figure_ct_interp, est_figure_ct_interp) 
-        im2d_loss_xr_hidden = self.l1loss(src_figure_xr_hidden, est_figure_xr_hidden) 
-
-        im3d_loss = im3d_loss_ct_random + im3d_loss_ct_interp
-        im2d_loss = im2d_loss_ct_random + im2d_loss_ct_interp + im2d_loss_xr_hidden
+        # im3d_loss = im3d_loss_dx_random + im3d_loss_dx_locked + im3d_loss_ct_random + im3d_loss_ct_locked
+        # im2d_loss = im2d_loss_dx_random + im2d_loss_dx_locked + im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden + im2d_loss_xr_interp
+        
         self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
         self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-
 
         loss = self.alpha * im3d_loss + self.gamma * im2d_loss
              
         if batch_idx==0:
             viz2d = torch.cat([
-                torch.cat([est_figure_ct_random, src_figure_ct_interp, src_figure_xr_hidden], dim=-2).transpose(2, 3),
-                torch.cat([rec_figure_ct_random, est_figure_ct_interp, est_figure_xr_hidden], dim=-2).transpose(2, 3),
+                torch.cat([est_figure_ct_random, est_figure_ct_locked, est_figure_dx_random, est_figure_dx_locked, src_figure_xr_hidden, noisy2d], dim=-2).transpose(2, 3),
+                torch.cat([rec_figure_ct_random, rec_figure_ct_locked, rec_figure_dx_random, rec_figure_dx_locked, est_figure_xr_hidden, est_figure_xr_interp], dim=-2).transpose(2, 3),
                 torch.cat([image3d[..., self.vol_shape//2, :], 
+                           noisy3d[..., self.vol_shape//2, :], 
                            est_volume_ct_random[..., self.vol_shape//2, :], 
+                           est_volume_ct_locked[..., self.vol_shape//2, :], 
+                           est_volume_xr_interp[..., self.vol_shape//2, :], 
                            est_volume_xr_hidden[..., self.vol_shape//2, :], 
                            ], dim=-2).transpose(2, 3),  
             ], dim=-2)
@@ -299,7 +339,7 @@ if __name__ == "__main__":
             swa_callback if not hparams.gan else None,
         ],
         accumulate_grad_batches=4 if not hparams.gan else 1,
-        strategy="auto", #"ddp_find_unused_parameters_true", 
+        strategy="ddp_find_unused_parameters_true", #"auto", #"ddp_find_unused_parameters_true", 
         precision=16 if hparams.amp else 32,
         # gradient_clip_val=0.01, 
         # gradient_clip_algorithm="value"
