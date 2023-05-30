@@ -217,14 +217,14 @@ class NeRVLightningModule(LightningModule):
              
         if batch_idx==0:
             viz2d = torch.cat([
-                torch.cat([est_figure_ct_random, est_figure_ct_locked, est_figure_dx_random, est_figure_dx_locked, src_figure_xr_hidden, noisy2d], dim=-2).transpose(2, 3),
-                torch.cat([rec_figure_ct_random, rec_figure_ct_locked, rec_figure_dx_random, rec_figure_dx_locked, est_figure_xr_hidden, est_figure_xr_interp], dim=-2).transpose(2, 3),
+                torch.cat([est_figure_ct_random, est_figure_dx_random, est_figure_ct_locked, est_figure_dx_locked, src_figure_xr_hidden, noisy2d], dim=-2).transpose(2, 3),
+                torch.cat([rec_figure_ct_random, rec_figure_dx_random, rec_figure_ct_locked, rec_figure_dx_locked, est_figure_xr_hidden, est_figure_xr_interp], dim=-2).transpose(2, 3),
                 torch.cat([image3d[..., self.vol_shape//2, :], 
                            noisy3d[..., self.vol_shape//2, :], 
                            est_volume_ct_random[..., self.vol_shape//2, :], 
-                           est_volume_ct_locked[..., self.vol_shape//2, :], 
-                           est_volume_xr_interp[..., self.vol_shape//2, :], 
+                           est_volume_dx_random[..., self.vol_shape//2, :], 
                            est_volume_xr_hidden[..., self.vol_shape//2, :], 
+                           est_volume_xr_interp[..., self.vol_shape//2, :], 
                            ], dim=-2).transpose(2, 3),  
             ], dim=-2)
             tensorboard = self.logger.experiment
