@@ -94,15 +94,15 @@ class NeRVLightningModule(LightningModule):
         self.l1loss = nn.L1Loss(reduction="mean")
 
     def forward_screen(self, image3d, cameras, is_training=True):   
-        return self.fwd_renderer(image3d, cameras) 
+        return self.fwd_renderer(image3d * 0.5 + 0.5, cameras) * 2.0 - 1.0
 
     def forward_volume(self, image2d, elev, azim, n_views=[2, 1], is_training=True): 
-        return self.inv_renderer(image2d * 2.0 - 1.0, elev.squeeze(1), azim.squeeze(1), n_views) 
+        return self.inv_renderer(image2d, elev.squeeze(1), azim.squeeze(1), n_views) 
     
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str] = 'evaluation'):
         _device = batch["image3d"].device
-        image3d = batch["image3d"]
-        image2d = batch["image2d"]
+        image3d = batch["image3d"] * 2.0 - 1.0
+        image2d = batch["image2d"] * 2.0 - 1.0
         batchsz = image3d.shape[0]
           
         # Construct the random cameras, -1 and 1 are the same point in azimuths
@@ -128,11 +128,11 @@ class NeRVLightningModule(LightningModule):
         camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
         
         # Diffusion step goes here    
-        noise3d = torch.randn_like(image3d) * 0.5 + 0.5
+        noise3d = torch.randn_like(image3d)
         src_figure_dx_random = self.forward_screen(image3d=noise3d, cameras=camera_random)
         src_figure_dx_locked = self.forward_screen(image3d=noise3d, cameras=camera_locked)
         
-        randn3d = torch.randn_like(image3d) * 0.5 + 0.5
+        randn3d = torch.randn_like(image3d)
         noise2d = self.forward_screen(image3d=randn3d, cameras=camera_hidden)
         
         # Sample a random timestep for each image
@@ -228,8 +228,8 @@ class NeRVLightningModule(LightningModule):
                            ], dim=-2).transpose(2, 3),  
             ], dim=-2)
             tensorboard = self.logger.experiment
-            grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0)
-            tensorboard.add_image(f'{stage}_2d_samples', grid2d.clamp(0., 1.), self.current_epoch*self.batch_size + batch_idx)
+            grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
+            tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
             
         return loss
 
