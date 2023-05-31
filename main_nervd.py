@@ -21,6 +21,8 @@ from lightning.pytorch.callbacks import StochasticWeightAveraging
 from lightning.pytorch.loggers import TensorBoardLogger
 from argparse import ArgumentParser
 
+from diffusers import DDPMScheduler
+
 from datamodule import UnpairedDataModule
 from dvr.renderer import DirectVolumeFrontToBackRenderer
 from nerv.renderer import NeRVFrontToBackInverseRenderer, NeRVFrontToBackFrustumFeaturer, make_cameras_dea 
@@ -48,7 +50,6 @@ class NeRVLightningModule(LightningModule):
         self.clamp_val = hparams.clamp_val
         self.timesteps = hparams.timesteps
         
-        from diffusers import DDPMScheduler
         self.noise_scheduler = DDPMScheduler(num_train_timesteps=self.timesteps)
         
         self.logsdir = hparams.logsdir
@@ -138,6 +139,7 @@ class NeRVLightningModule(LightningModule):
         # Sample a random timestep for each image
         timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (batchsz,), device=_device)
         timetotal = torch.Tensor([self.noise_scheduler.num_train_timesteps]).to(_device)
+        timezeros = torch.Tensor([0]).to(_device)
         
         noisy3d = self.noise_scheduler.add_noise(image3d, noise3d, timesteps) 
         noisy2d = self.noise_scheduler.add_noise(image2d, noise2d, timesteps) 
@@ -152,7 +154,7 @@ class NeRVLightningModule(LightningModule):
             est_volume_xr_hidden = torch.split(
                 self.forward_volume(
                     image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
-                    elev=torch.cat([timetotal.view(cam_view), timetotal.view(cam_view), timetotal.view(cam_view)]),
+                    elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view), timezeros.view(cam_view)]),
                     azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]) * 90,
                     n_views=[2, 1]
                 ), self.batch_size
