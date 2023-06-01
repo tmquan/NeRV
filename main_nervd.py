@@ -100,6 +100,10 @@ class NeRVLightningModule(LightningModule):
     def forward_volume(self, image2d, elev, azim, n_views=[2, 1], is_training=True): 
         return self.inv_renderer(image2d, elev.squeeze(1), azim.squeeze(1), n_views) 
     
+    def add_noise(self, x, noise, amount):
+        amount = amount.view(-1, 1, 1, 1) # Sort shape so broadcasting works
+        return x*(1-amount) + noise*amount 
+
     def _common_step(self, batch, batch_idx, optimizer_idx, stage: Optional[str] = 'evaluation'):
         _device = batch["image3d"].device
         image3d = batch["image3d"] * 2.0 - 1.0
@@ -137,12 +141,18 @@ class NeRVLightningModule(LightningModule):
         noise2d = self.forward_screen(image3d=randn3d, cameras=camera_hidden)
         
         # Sample a random timestep for each image
-        timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (batchsz,), device=_device)
-        timetotal = torch.Tensor([self.noise_scheduler.num_train_timesteps]).to(_device)
+        # timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (batchsz,), device=_device)
+        # timetotal = torch.Tensor([self.noise_scheduler.num_train_timesteps]).to(_device)
+        # timezeros = torch.Tensor([0]).to(_device)
+        
+        # noisy3d = self.noise_scheduler.add_noise(image3d, noise3d, timesteps) 
+        # noisy2d = self.noise_scheduler.add_noise(image2d, noise2d, timesteps) 
+        
+        timesteps = torch.rand((batchsz,), device=_device) # 0 1
         timezeros = torch.Tensor([0]).to(_device)
         
-        noisy3d = self.noise_scheduler.add_noise(image3d, noise3d, timesteps) 
-        noisy2d = self.noise_scheduler.add_noise(image2d, noise2d, timesteps) 
+        noisy3d = self.add_noise(image3d, noise3d, timesteps) 
+        noisy2d = self.add_noise(image2d, noise2d, timesteps) 
         
         est_figure_dx_random = self.forward_screen(image3d=noisy3d, cameras=camera_random)
         est_figure_dx_locked = self.forward_screen(image3d=noisy3d, cameras=camera_locked)
@@ -155,7 +165,7 @@ class NeRVLightningModule(LightningModule):
                 self.forward_volume(
                     image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
                     elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view), timezeros.view(cam_view)]),
-                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]) * 90,
+                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
                     n_views=[2, 1]
                 ), self.batch_size
             )  
@@ -166,7 +176,7 @@ class NeRVLightningModule(LightningModule):
                 self.forward_volume(
                     image2d=torch.cat([est_figure_dx_random, est_figure_dx_locked, noisy2d]),
                     elev=torch.cat([timesteps.view(cam_view), timesteps.view(cam_view), timesteps.view(cam_view)]),
-                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]) * 90,
+                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
                     n_views=[2, 1]
                 ), self.batch_size
             )          
@@ -200,11 +210,11 @@ class NeRVLightningModule(LightningModule):
             im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
             im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden      
         else:
-            im3d_loss_dx_random = self.l1loss(noise3d, est_volume_dx_random) 
-            im3d_loss_dx_locked = self.l1loss(noise3d, est_volume_dx_locked) 
-            im2d_loss_dx_random = self.l1loss(src_figure_dx_random, rec_figure_dx_random) #
-            im2d_loss_dx_locked = self.l1loss(src_figure_dx_locked, rec_figure_dx_locked) #
-            im2d_loss_xr_interp = self.l1loss(noise2d, est_figure_xr_interp) 
+            im3d_loss_dx_random = self.l1loss(image3d, est_volume_dx_random) 
+            im3d_loss_dx_locked = self.l1loss(image3d, est_volume_dx_locked) 
+            im2d_loss_dx_random = self.l1loss(est_figure_ct_random, rec_figure_dx_random) #
+            im2d_loss_dx_locked = self.l1loss(est_figure_ct_locked, rec_figure_dx_locked) #
+            im2d_loss_xr_interp = self.l1loss(image2d, est_figure_xr_interp) 
             
             im3d_loss = im3d_loss_dx_random + im3d_loss_dx_locked
             im2d_loss = im2d_loss_dx_random + im2d_loss_dx_locked + im2d_loss_xr_interp  
