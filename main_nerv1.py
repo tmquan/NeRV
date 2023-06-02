@@ -109,81 +109,142 @@ class NeRVLightningModule(LightningModule):
         image3d = batch["image3d"] * 2.0 - 1.0
         image2d = batch["image2d"] * 2.0 - 1.0
         
-        timezeros = torch.Tensor([0]).to(_device)
+        if self.img:
+            timezeros = torch.Tensor([0]).to(_device)
+                
+            # Construct the random cameras, -1 and 1 are the same point in azimuths
+            src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
+            src_elev_random = torch.zeros(self.batch_size, device=_device)
+            src_azim_random = torch.rand_like(src_elev_random) * 2 - 1 # [0 1) to [-1 1)
+            camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
+            est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
+            est_elev_random, est_azim_random = src_elev_random, src_azim_random 
             
-        # Construct the random cameras, -1 and 1 are the same point in azimuths
-        src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
-        src_elev_random = torch.zeros(self.batch_size, device=_device)
-        src_azim_random = torch.rand_like(src_elev_random) * 2 - 1 # [0 1) to [-1 1)
-        camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
-        est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
-        est_elev_random, est_azim_random = src_elev_random, src_azim_random 
-        
-        src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
-        src_elev_locked = torch.zeros(self.batch_size, device=_device)
-        src_azim_locked = torch.rand_like(src_elev_locked) * 2 - 1 # [0 1) to [-1 1)
-        camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
-        est_figure_ct_locked = self.forward_screen(image3d=image3d, cameras=camera_locked)
-        est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
-        
-        # XR pathway
-        src_figure_xr_hidden = image2d
-        est_dist_hidden = 10.0 * torch.ones(self.batch_size, device=_device)
-        est_elev_hidden = torch.zeros(self.batch_size, device=_device)
-        est_azim_hidden = torch.zeros(self.batch_size, device=_device)
-        camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
-        
-        
-        cam_view = [self.batch_size, 1]     
-        est_volume_ct_random, \
-        est_volume_ct_locked, \
-        est_volume_xr_hidden = torch.split(
-            self.forward_volume(
-                image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
-                elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view), timezeros.view(cam_view)]),
-                azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
-                n_views=[2, 1]
-            ), self.batch_size
-        )  
-        
-        # Reconstruct the appropriate XR
-        rec_figure_ct_random = self.forward_screen(image3d=est_volume_ct_random, cameras=camera_random, is_training=(stage=='train'))
-        rec_figure_ct_locked = self.forward_screen(image3d=est_volume_ct_locked, cameras=camera_locked, is_training=(stage=='train'))
-        est_figure_xr_hidden = self.forward_screen(image3d=est_volume_xr_hidden, cameras=camera_hidden, is_training=(stage=='train'))
-        
-        # Perform Post activation like DVGO      
-        est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
-        est_volume_ct_locked = est_volume_ct_locked.sum(dim=1, keepdim=True)
-        est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
-        
-        # Compute the loss
-        im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
-        im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) 
-        im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random)         
-        im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked)         
-        im2d_loss_xr_hidden = self.l1loss(image2d, est_figure_xr_hidden) 
-        
-        im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
-        im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden      
-        
-        self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-        self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+            src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
+            src_elev_locked = torch.zeros(self.batch_size, device=_device)
+            src_azim_locked = torch.rand_like(src_elev_locked) * 2 - 1 # [0 1) to [-1 1)
+            camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
+            est_figure_ct_locked = self.forward_screen(image3d=image3d, cameras=camera_locked)
+            est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
+            
+            # XR pathway
+            src_figure_xr_hidden = image2d
+            est_dist_hidden = 10.0 * torch.ones(self.batch_size, device=_device)
+            est_elev_hidden = torch.zeros(self.batch_size, device=_device)
+            est_azim_hidden = torch.zeros(self.batch_size, device=_device)
+            camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
+            
+            
+            cam_view = [self.batch_size, 1]     
+            est_volume_ct_random, \
+            est_volume_ct_locked, \
+            est_volume_xr_hidden = torch.split(
+                self.forward_volume(
+                    image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
+                    elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view), timezeros.view(cam_view)]),
+                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
+                    n_views=[2, 1]
+                ), self.batch_size
+            )  
+            
+            # Reconstruct the appropriate XR
+            rec_figure_ct_random = self.forward_screen(image3d=est_volume_ct_random, cameras=camera_random, is_training=(stage=='train'))
+            rec_figure_ct_locked = self.forward_screen(image3d=est_volume_ct_locked, cameras=camera_locked, is_training=(stage=='train'))
+            est_figure_xr_hidden = self.forward_screen(image3d=est_volume_xr_hidden, cameras=camera_hidden, is_training=(stage=='train'))
+            
+            # Perform Post activation like DVGO      
+            est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
+            est_volume_ct_locked = est_volume_ct_locked.sum(dim=1, keepdim=True)
+            est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
+            
+            # Compute the loss
+            im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
+            im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) 
+            im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random)         
+            im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked)         
+            im2d_loss_xr_hidden = self.l1loss(image2d, est_figure_xr_hidden) 
+            
+            im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
+            im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden      
+            
+            self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+            self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
 
-        loss = self.alpha * im3d_loss + self.gamma * im2d_loss
-             
-        if batch_idx==0:
-            viz2d = torch.cat([
-                torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden], dim=-2).transpose(2, 3),
-                torch.cat([rec_figure_ct_random, rec_figure_ct_locked, est_figure_xr_hidden], dim=-2).transpose(2, 3),
-                torch.cat([image3d[..., self.vol_shape//2, :], 
-                           est_volume_ct_random[..., self.vol_shape//2, :], 
-                           est_volume_xr_hidden[..., self.vol_shape//2, :], 
-                           ], dim=-2).transpose(2, 3),  
-            ], dim=-2)
-            tensorboard = self.logger.experiment
-            grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
-            tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+            loss = self.alpha * im3d_loss + self.gamma * im2d_loss
+                
+            if batch_idx==0:
+                viz2d = torch.cat([
+                    torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden], dim=-2).transpose(2, 3),
+                    torch.cat([rec_figure_ct_random, rec_figure_ct_locked, est_figure_xr_hidden], dim=-2).transpose(2, 3),
+                    torch.cat([image3d[..., self.vol_shape//2, :], 
+                            est_volume_ct_random[..., self.vol_shape//2, :], 
+                            est_volume_xr_hidden[..., self.vol_shape//2, :], 
+                            ], dim=-2).transpose(2, 3),  
+                ], dim=-2)
+                tensorboard = self.logger.experiment
+                grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
+                tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+        else:
+            # Construct the random cameras, -1 and 1 are the same point in azimuths
+            src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
+            src_elev_random = torch.zeros(self.batch_size, device=_device)
+            src_azim_random = torch.rand_like(src_elev_random) * 2 - 1 # [0 1) to [-1 1)
+            camera_random = make_cameras_dea(src_dist_random, src_elev_random, src_azim_random)
+            est_figure_ct_random = self.forward_screen(image3d=image3d, cameras=camera_random)
+            est_elev_random, est_azim_random = src_elev_random, src_azim_random 
             
+            src_dist_locked = 10.0 * torch.ones(self.batch_size, device=_device)
+            src_elev_locked = torch.zeros(self.batch_size, device=_device)
+            src_azim_locked = torch.rand_like(src_elev_locked) * 2 - 1 # [0 1) to [-1 1)
+            camera_locked = make_cameras_dea(src_dist_locked, src_elev_locked, src_azim_locked)
+            est_figure_ct_locked = self.forward_screen(image3d=image3d, cameras=camera_locked)
+            est_elev_locked, est_azim_locked = src_elev_locked, src_azim_locked 
+            
+            cam_view = [self.batch_size, 1]     
+            est_volume_ct_random, \
+            est_volume_ct_locked = torch.split(
+                self.forward_volume(
+                    image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked]),
+                    elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view)]),
+                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view)]), # * 90,
+                    n_views=[2, 1]
+                ), self.batch_size
+            )  
+            
+            # Reconstruct the appropriate XR
+            rec_figure_ct_random = self.forward_screen(image3d=est_volume_ct_random, cameras=camera_random, is_training=(stage=='train'))
+            rec_figure_ct_locked = self.forward_screen(image3d=est_volume_ct_locked, cameras=camera_locked, is_training=(stage=='train'))
+            
+            # Perform Post activation like DVGO      
+            est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
+            est_volume_ct_locked = est_volume_ct_locked.sum(dim=1, keepdim=True)
+            
+            # Compute the loss
+            im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
+            im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) 
+            im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random)         
+            im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked)         
+            
+            im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
+            im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked 
+            
+            self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+            self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+
+            loss = self.alpha * im3d_loss + self.gamma * im2d_loss
+                
+            if batch_idx==0:
+                viz2d = torch.cat([
+                    torch.cat([est_figure_ct_random, est_figure_ct_locked], dim=-2).transpose(2, 3),
+                    torch.cat([rec_figure_ct_random, rec_figure_ct_locked], dim=-2).transpose(2, 3),
+                    torch.cat([image3d[..., self.vol_shape//2, :], 
+                            est_volume_ct_random[..., self.vol_shape//2, :], 
+                            ], dim=-2).transpose(2, 3),  
+                ], dim=-2)
+                tensorboard = self.logger.experiment
+                grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
+                tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+                    
         return loss
 
     def training_step(self, batch, batch_idx, optimizer_idx=None):
