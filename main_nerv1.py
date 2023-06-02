@@ -185,6 +185,8 @@ class NeRVLightningModule(LightningModule):
                 grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
                 tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
         else:
+            timezeros = torch.Tensor([0]).to(_device)
+            
             # Construct the random cameras, -1 and 1 are the same point in azimuths
             src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
             src_elev_random = torch.zeros(self.batch_size, device=_device)
