@@ -209,7 +209,7 @@ class NeRVLightningModule(LightningModule):
                     image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked]),
                     elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view)]),
                     azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view)]), # * 90,
-                    n_views=[2, 1]
+                    n_views=[2]
                 ), self.batch_size
             )  
             
