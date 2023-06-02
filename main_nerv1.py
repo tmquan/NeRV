@@ -108,16 +108,8 @@ class NeRVLightningModule(LightningModule):
         _device = batch["image3d"].device
         image3d = batch["image3d"] * 2.0 - 1.0
         image2d = batch["image2d"] * 2.0 - 1.0
-        batchsz = image3d.shape[0]
         
-        timesteps = torch.rand((batchsz,), device=_device) # 0 1
         timezeros = torch.Tensor([0]).to(_device)
-        
-        if stage=="train":
-            noise3d = torch.randn_like(image3d)
-            noise2d = torch.randn_like(image2d)
-            image3d = self.add_noise(image3d, noise3d, torch.rand((batchsz,), device=_device))
-            image2d = self.add_noise(image2d, noise2d, torch.rand((batchsz,), device=_device))
             
         # Construct the random cameras, -1 and 1 are the same point in azimuths
         src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
