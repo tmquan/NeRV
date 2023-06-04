@@ -186,25 +186,26 @@ class NeRVLightningModule(LightningModule):
         self.log(f'{stage}_diff_loss', diff_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
          
         if batch_idx==0:
-            synth_images = noise_images.clone()
-            for t in tqdm(self.noise_scheduler.timesteps):
-                # 1. predict noise model_output
-                model_output = self.diffusion_model(synth_images, 
-                                                    t, 
-                                                    class_labels=class_labels).sample
+            with torch.no_grad():
+                synth_images = noise_images.clone()
+                for t in tqdm(self.noise_scheduler.timesteps):
+                    # 1. predict noise model_output
+                    model_output = self.diffusion_model(synth_images, 
+                                                        t, 
+                                                        class_labels=class_labels).sample
 
-                # 2. compute previous image: x_t -> x_t-1
-                synth_images = self.noise_scheduler.step(model_output, t, synth_images, generator=None).prev_sample
-            gen_figure_ct_random, gen_figure_ct_locked, gen_figure_xr_hidden = torch.split(synth_images, [1, 1, 1])
-            gen2d = torch.cat([
-                torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden], dim=-2).transpose(2, 3),
-                torch.cat([eps_figure_ct_random, eps_figure_ct_locked, eps_figure_xr_hidden], dim=-2).transpose(2, 3),
-                torch.cat([gen_figure_ct_random, gen_figure_ct_locked, gen_figure_xr_hidden], dim=-2).transpose(2, 3),
-                
-            ], dim=-2)
-            tensorboard = self.logger.experiment
-            grid2d = torchvision.utils.make_grid(gen2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
-            tensorboard.add_image(f'{stage}_df_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+                    # 2. compute previous image: x_t -> x_t-1
+                    synth_images = self.noise_scheduler.step(model_output, t, synth_images, generator=None).prev_sample
+                gen_figure_ct_random, gen_figure_ct_locked, gen_figure_xr_hidden = torch.split(synth_images, [1, 1, 1])
+                gen2d = torch.cat([
+                    torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden], dim=-2).transpose(2, 3),
+                    torch.cat([eps_figure_ct_random, eps_figure_ct_locked, eps_figure_xr_hidden], dim=-2).transpose(2, 3),
+                    torch.cat([gen_figure_ct_random, gen_figure_ct_locked, gen_figure_xr_hidden], dim=-2).transpose(2, 3),
+                    
+                ], dim=-2)
+                tensorboard = self.logger.experiment
+                grid2d = torchvision.utils.make_grid(gen2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
+                tensorboard.add_image(f'{stage}_df_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
 
 
         loss = diff_loss 
