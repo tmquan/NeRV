@@ -20,8 +20,10 @@ from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import StochasticWeightAveraging
 from lightning.pytorch.loggers import TensorBoardLogger
 from argparse import ArgumentParser
+from tqdm.auto import tqdm
 
-from diffusers import DDPMScheduler
+import diffusers
+from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
 
 from datamodule import UnpairedDataModule
 from dvr.renderer import DirectVolumeFrontToBackRenderer
@@ -46,11 +48,13 @@ class NeRVLightningModule(LightningModule):
         self.delta = hparams.delta
         self.theta = hparams.theta
         self.omega = hparams.omega
+        self.ddpmbeta = hparams.ddpmbeta
+        
         self.lambda_gp = hparams.lambda_gp
         self.clamp_val = hparams.clamp_val
         self.timesteps = hparams.timesteps
         
-        self.noise_scheduler = DDPMScheduler(num_train_timesteps=self.timesteps)
+        self.noise_scheduler = DDPMScheduler(num_train_timesteps=self.timesteps, beta_schedule=self.ddpmbeta)
         
         self.logsdir = hparams.logsdir
        
@@ -74,16 +78,40 @@ class NeRVLightningModule(LightningModule):
             ndc_extent=3.0,
         )
         
-        self.inv_renderer = NeRVFrontToBackInverseRenderer(
-            in_channels=1, 
-            out_channels=self.sh**2 if self.sh>0 else 1, 
-            vol_shape=self.vol_shape, 
-            img_shape=self.img_shape, 
-            sh=self.sh, 
-            pe=self.pe,
-            backbone=self.backbone,
-        )
+        # self.inv_renderer = NeRVFrontToBackInverseRenderer(
+        #     in_channels=1, 
+        #     out_channels=self.sh**2 if self.sh>0 else 1, 
+        #     vol_shape=self.vol_shape, 
+        #     img_shape=self.img_shape, 
+        #     sh=self.sh, 
+        #     pe=self.pe,
+        #     backbone=self.backbone,
+        # )
         
+        self.diffusion_model = UNet2DModel(
+            sample_size=self.img_shape,
+            in_channels=1,
+            out_channels=1,
+            layers_per_block=2,
+            block_out_channels=(128, 128, 256, 256, 512, 512),
+            down_block_types=(
+                "DownBlock2D",
+                "DownBlock2D",
+                "DownBlock2D",
+                "DownBlock2D",
+                "AttnDownBlock2D",
+                "AttnDownBlock2D",
+            ),
+            up_block_types=(
+                "AttnUpBlock2D",
+                "AttnUpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+            ),
+            class_embed_type="timestep",
+        )
         if self.ckpt:
             checkpoint = torch.load(self.ckpt, map_location=torch.device('cpu'))["state_dict"]
             state_dict = {k: v for k, v in checkpoint.items() if k in self.state_dict()}
@@ -108,8 +136,9 @@ class NeRVLightningModule(LightningModule):
         _device = batch["image3d"].device
         image3d = batch["image3d"] * 2.0 - 1.0
         image2d = batch["image2d"] * 2.0 - 1.0
-        batchsz = image3d.shape[0]
-          
+        batchsz = image2d.shape[0]
+        timezeros = torch.Tensor([0]).to(_device)
+            
         # Construct the random cameras, -1 and 1 are the same point in azimuths
         src_dist_random = 10.0 * torch.ones(self.batch_size, device=_device)
         src_elev_random = torch.zeros(self.batch_size, device=_device)
@@ -132,117 +161,104 @@ class NeRVLightningModule(LightningModule):
         est_azim_hidden = torch.zeros(self.batch_size, device=_device)
         camera_hidden = make_cameras_dea(est_dist_hidden, est_elev_hidden, est_azim_hidden)
         
-        # Diffusion step goes here    
-        noise3d = torch.randn_like(image3d)
-        src_figure_dx_random = self.forward_screen(image3d=noise3d, cameras=camera_random)
-        src_figure_dx_locked = self.forward_screen(image3d=noise3d, cameras=camera_locked)
+        # Sample noise that we'll add to the images
+        eps_figure_ct_latent = torch.randn_like(image2d)
+        eps_figure_xr_latent = torch.randn_like(image2d)
+        eps_figure_ct_random = eps_figure_ct_latent.clone()
+        eps_figure_ct_locked = eps_figure_ct_latent.clone() # 2 view of CT share the same latent code
+        eps_figure_xr_hidden = eps_figure_xr_latent.clone()
         
-        randn3d = torch.randn_like(image3d)
-        noise2d = self.forward_screen(image3d=randn3d, cameras=camera_hidden)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batchsz*3,), device=_device).long()
+        clean_images = torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden])
+        noise_images = torch.cat([eps_figure_ct_random, eps_figure_ct_locked, eps_figure_xr_hidden])
+        class_labels = torch.cat([est_azim_random, est_azim_locked, est_azim_hidden])
         
-        # Sample a random timestep for each image
-        # timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (batchsz,), device=_device)
-        # timetotal = torch.Tensor([self.noise_scheduler.num_train_timesteps]).to(_device)
-        # timezeros = torch.Tensor([0]).to(_device)
+        # Add noise to the clean images according to the noise magnitude at each timestep
+        # (this is the forward diffusion process)
+        noisy_images = self.noise_scheduler.add_noise(clean_images, noise_images, timesteps)
         
-        # noisy3d = self.noise_scheduler.add_noise(image3d, noise3d, timesteps) 
-        # noisy2d = self.noise_scheduler.add_noise(image2d, noise2d, timesteps) 
-        
-        timesteps = torch.rand((batchsz,), device=_device) # 0 1
-        timezeros = torch.Tensor([0]).to(_device)
-        
-        noisy3d = self.add_noise(image3d, noise3d, timesteps) 
-        noisy2d = self.add_noise(image2d, noise2d, timesteps) 
-        
-        est_figure_dx_random = self.forward_screen(image3d=noisy3d, cameras=camera_random)
-        est_figure_dx_locked = self.forward_screen(image3d=noisy3d, cameras=camera_locked)
-        
-        cam_view = [self.batch_size, 1]     
-        with torch.set_grad_enabled(batch_idx%2==0  and stage=="train"):   
-            est_volume_ct_random, \
-            est_volume_ct_locked, \
-            est_volume_xr_hidden = torch.split(
-                self.forward_volume(
-                    image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
-                    elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view), timezeros.view(cam_view)]),
-                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
-                    n_views=[2, 1]
-                ), self.batch_size
-            )  
-        with torch.set_grad_enabled(batch_idx%2!=0  and stage=="train"):   
-            est_volume_dx_random, \
-            est_volume_dx_locked, \
-            est_volume_xr_interp = torch.split(
-                self.forward_volume(
-                    image2d=torch.cat([est_figure_dx_random, est_figure_dx_locked, noisy2d]),
-                    elev=torch.cat([timesteps.view(cam_view), timesteps.view(cam_view), timesteps.view(cam_view)]),
-                    azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
-                    n_views=[2, 1]
-                ), self.batch_size
-            )          
-        # # Predict the noise residual
-        # noise3d_pred = model(noisy3d, timesteps, return_dict=False)[0]
-                
-        # Reconstruct the appropriate XR
-        rec_figure_ct_random = self.forward_screen(image3d=est_volume_ct_random, cameras=camera_random, is_training=(stage=='train'))
-        rec_figure_ct_locked = self.forward_screen(image3d=est_volume_ct_locked, cameras=camera_locked, is_training=(stage=='train'))
-        rec_figure_dx_random = self.forward_screen(image3d=est_volume_dx_random, cameras=camera_random, is_training=(stage=='train'))
-        rec_figure_dx_locked = self.forward_screen(image3d=est_volume_dx_locked, cameras=camera_locked, is_training=(stage=='train'))
-        est_figure_xr_hidden = self.forward_screen(image3d=est_volume_xr_hidden, cameras=camera_hidden, is_training=(stage=='train'))
-        est_figure_xr_interp = self.forward_screen(image3d=est_volume_xr_interp, cameras=camera_hidden, is_training=(stage=='train'))
-
-        # Perform Post activation like DVGO      
-        est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
-        est_volume_ct_locked = est_volume_ct_locked.sum(dim=1, keepdim=True)
-        est_volume_dx_random = est_volume_dx_random.sum(dim=1, keepdim=True)
-        est_volume_dx_locked = est_volume_dx_locked.sum(dim=1, keepdim=True)
-        est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
-        est_volume_xr_interp = est_volume_xr_interp.sum(dim=1, keepdim=True)
-
-        # Compute the loss
-        if batch_idx%2==0:
-            im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
-            im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) 
-            im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random)         
-            im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked)         
-            im2d_loss_xr_hidden = self.l1loss(image2d, est_figure_xr_hidden) 
-            
-            im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
-            im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden      
-        else:
-            im3d_loss_dx_random = self.l1loss(image3d, est_volume_dx_random) 
-            im3d_loss_dx_locked = self.l1loss(image3d, est_volume_dx_locked) 
-            im2d_loss_dx_random = self.l1loss(est_figure_ct_random, rec_figure_dx_random) #
-            im2d_loss_dx_locked = self.l1loss(est_figure_ct_locked, rec_figure_dx_locked) #
-            im2d_loss_xr_interp = self.l1loss(image2d, est_figure_xr_interp) 
-            
-            im3d_loss = im3d_loss_dx_random + im3d_loss_dx_locked
-            im2d_loss = im2d_loss_dx_random + im2d_loss_dx_locked + im2d_loss_xr_interp  
-        
-        # im3d_loss = im3d_loss_dx_random + im3d_loss_dx_locked + im3d_loss_ct_random + im3d_loss_ct_locked
-        # im2d_loss = im2d_loss_dx_random + im2d_loss_dx_locked + im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden + im2d_loss_xr_interp
-        
-        self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-        self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
-
-        loss = self.alpha * im3d_loss + self.gamma * im2d_loss
-             
+        model_output = self.diffusion_model(
+            noisy_images, 
+            timesteps,
+            class_labels=class_labels
+        ).sample
+        diff_loss = self.l1loss(model_output, noise_images)
+        self.log(f'{stage}_diff_loss', diff_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+         
         if batch_idx==0:
-            viz2d = torch.cat([
-                torch.cat([est_figure_ct_random, est_figure_dx_random, est_figure_ct_locked, est_figure_dx_locked, src_figure_xr_hidden, noisy2d], dim=-2).transpose(2, 3),
-                torch.cat([rec_figure_ct_random, rec_figure_dx_random, rec_figure_ct_locked, rec_figure_dx_locked, est_figure_xr_hidden, est_figure_xr_interp], dim=-2).transpose(2, 3),
-                torch.cat([image3d[..., self.vol_shape//2, :], 
-                           noisy3d[..., self.vol_shape//2, :], 
-                           est_volume_ct_random[..., self.vol_shape//2, :], 
-                           est_volume_dx_random[..., self.vol_shape//2, :], 
-                           est_volume_xr_hidden[..., self.vol_shape//2, :], 
-                           est_volume_xr_interp[..., self.vol_shape//2, :], 
-                           ], dim=-2).transpose(2, 3),  
+            synth_images = noise_images.clone()
+            for t in tqdm(self.noise_scheduler.timesteps):
+                # 1. predict noise model_output
+                model_output = self.diffusion_model(synth_images, 
+                                                    t, 
+                                                    class_labels=class_labels).sample
+
+                # 2. compute previous image: x_t -> x_t-1
+                synth_images = self.noise_scheduler.step(model_output, t, synth_images, generator=None).prev_sample
+            gen_figure_ct_random, gen_figure_ct_locked, gen_figure_xr_hidden = torch.split(synth_images, [1, 1, 1])
+            gen2d = torch.cat([
+                torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden], dim=-2).transpose(2, 3),
+                torch.cat([eps_figure_ct_random, eps_figure_ct_locked, eps_figure_xr_hidden], dim=-2).transpose(2, 3),
+                torch.cat([gen_figure_ct_random, gen_figure_ct_locked, gen_figure_xr_hidden], dim=-2).transpose(2, 3),
+                
             ], dim=-2)
             tensorboard = self.logger.experiment
-            grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
-            tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+            grid2d = torchvision.utils.make_grid(gen2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
+            tensorboard.add_image(f'{stage}_df_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+
+
+        loss = diff_loss 
+        # cam_view = [self.batch_size, 1]     
+        # est_volume_ct_random, \
+        # est_volume_ct_locked, \
+        # est_volume_xr_hidden = torch.split(
+        #     self.forward_volume(
+        #         image2d=torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden]),
+        #         elev=torch.cat([timezeros.view(cam_view), timezeros.view(cam_view), timezeros.view(cam_view)]),
+        #         azim=torch.cat([est_azim_random.view(cam_view), est_azim_locked.view(cam_view), est_azim_hidden.view(cam_view)]), # * 90,
+        #         n_views=[2, 1]
+        #     ), self.batch_size
+        # )  
+        
+        # # Reconstruct the appropriate XR
+        # rec_figure_ct_random = self.forward_screen(image3d=est_volume_ct_random, cameras=camera_random, is_training=(stage=='train'))
+        # rec_figure_ct_locked = self.forward_screen(image3d=est_volume_ct_locked, cameras=camera_locked, is_training=(stage=='train'))
+        # est_figure_xr_hidden = self.forward_screen(image3d=est_volume_xr_hidden, cameras=camera_hidden, is_training=(stage=='train'))
+        
+        # # Perform Post activation like DVGO      
+        # est_volume_ct_random = est_volume_ct_random.sum(dim=1, keepdim=True)
+        # est_volume_ct_locked = est_volume_ct_locked.sum(dim=1, keepdim=True)
+        # est_volume_xr_hidden = est_volume_xr_hidden.sum(dim=1, keepdim=True)
+        
+        # # Compute the loss
+        # im3d_loss_ct_random = self.l1loss(image3d, est_volume_ct_random) 
+        # im3d_loss_ct_locked = self.l1loss(image3d, est_volume_ct_locked) 
+        # im2d_loss_ct_random = self.l1loss(est_figure_ct_random, rec_figure_ct_random)         
+        # im2d_loss_ct_locked = self.l1loss(est_figure_ct_locked, rec_figure_ct_locked)         
+        # im2d_loss_xr_hidden = self.l1loss(image2d, est_figure_xr_hidden) 
+        
+        # im3d_loss = im3d_loss_ct_random + im3d_loss_ct_locked
+        # im2d_loss = im2d_loss_ct_random + im2d_loss_ct_locked + im2d_loss_xr_hidden      
+        
+        # self.log(f'{stage}_im2d_loss', im2d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+        # self.log(f'{stage}_im3d_loss', im3d_loss, on_step=(stage=='train'), prog_bar=True, logger=True, sync_dist=True, batch_size=self.batch_size)
+
+        # loss = self.alpha * im3d_loss + self.gamma * im2d_loss
             
+        # if batch_idx==0:
+        #     viz2d = torch.cat([
+        #         torch.cat([est_figure_ct_random, est_figure_ct_locked, src_figure_xr_hidden], dim=-2).transpose(2, 3),
+        #         torch.cat([rec_figure_ct_random, rec_figure_ct_locked, est_figure_xr_hidden], dim=-2).transpose(2, 3),
+        #         torch.cat([image3d[..., self.vol_shape//2, :], 
+        #                 est_volume_ct_random[..., self.vol_shape//2, :], 
+        #                 est_volume_xr_hidden[..., self.vol_shape//2, :], 
+        #                 ], dim=-2).transpose(2, 3),  
+        #     ], dim=-2)
+        #     tensorboard = self.logger.experiment
+        #     grid2d = torchvision.utils.make_grid(viz2d, normalize=False, scale_each=False, nrow=1, padding=0).clamp(-1., 1.) * 0.5 + 0.5
+        #     tensorboard.add_image(f'{stage}_2d_samples', grid2d, self.current_epoch*self.batch_size + batch_idx)
+
+                    
         return loss
 
     def training_step(self, batch, batch_idx, optimizer_idx=None):
@@ -266,7 +282,7 @@ class NeRVLightningModule(LightningModule):
         self.validation_step_outputs.clear()  # free memory
         
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.inv_renderer.parameters(), lr=self.lr, betas=(0.9, 0.999))
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, betas=(0.9, 0.999))
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 200], gamma=0.1)
         return [optimizer], [scheduler]
     
@@ -305,6 +321,7 @@ if __name__ == "__main__":
     parser.add_argument("--omega", type=float, default=1., help="cam cond")
     parser.add_argument("--lambda_gp", type=float, default=10, help="gradient penalty")
     parser.add_argument("--clamp_val", type=float, default=.1, help="gradient discrim clamp value")
+    parser.add_argument("--ddpmbeta", type=str, default="linear")
     
     parser.add_argument("--lr", type=float, default=1e-3, help="adam: learning rate")
     parser.add_argument("--ckpt", type=str, default=None, help="path to checkpoint")
@@ -351,7 +368,7 @@ if __name__ == "__main__":
             swa_callback if not hparams.gan else None,
         ],
         accumulate_grad_batches=4 if not hparams.gan else 1,
-        strategy="ddp_find_unused_parameters_true", #"auto", #"ddp_find_unused_parameters_true", 
+        strategy="auto", #"auto", #"ddp_find_unused_parameters_true", 
         precision=16 if hparams.amp else 32,
         # gradient_clip_val=0.01, 
         # gradient_clip_algorithm="value"
